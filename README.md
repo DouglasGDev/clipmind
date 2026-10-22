@@ -562,7 +562,7 @@ Contribuições são bem-vindas! Sinta-se à vontade para:
 
 ## Autor
 
-**Douglas Gonçalves** — [GitHub](https://github.com/DouglasGDev)
+**Douglas da Silva Groff** — [GitHub](https://github.com/DouglasGDev)
 
 ---
 
