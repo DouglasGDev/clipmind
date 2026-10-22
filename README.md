@@ -147,7 +147,28 @@ Se todos os comandos acima funcionarem, você está pronto para usar o ClipMind!
 
 ## Uso
 
-### Iniciar o programa
+### Interface Web (Recomendado)
+
+O ClipMind possui uma interface visual moderna e intuitiva:
+
+```bash
+python server.py
+```
+
+Acesse **http://localhost:8000** no navegador.
+
+**Funcionalidades da interface:**
+- Upload de vídeo por drag-and-drop ou seleção de arquivo
+- Preview do vídeo com player integrado
+- Timeline interativa para marcar pontos de corte
+- Botões visuais para todas as ferramentas
+- Chat por texto para comandos em linguagem natural
+- Feedback em tempo real via WebSocket (mostra quando a IA está processando)
+- Download direto dos arquivos processados
+
+### Interface Terminal (CLI)
+
+Para usar via linha de comando:
 
 ```bash
 python editor_agent.py

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipMind - Editor de Vídeo com IA</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ClipMind</h1>
+            <p class="subtitle">Editor de Vídeo Inteligente com IA Local</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Área de Upload e Preview -->
+            <div class="video-section">
+                <div id="upload-area" class="upload-area">
+                    <div class="upload-icon">📹</div>
+                    <p>Arraste um vídeo aqui ou clique para selecionar</p>
+                    <input type="file" id="video-input" accept="video/*" hidden>
+                    <button class="btn btn-primary" onclick="document.getElementById('video-input').click()">
+                        Selecionar Vídeo
+                    </button>
+                </div>
+
+                <div id="video-preview" class="video-preview" style="display: none;">
+                    <video id="video-player" controls></video>
+                    <div class="video-info" id="video-info"></div>
+                </div>
+
+                <!-- Timeline Simples -->
+                <div id="timeline" class="timeline" style="display: none;">
+                    <div class="timeline-controls">
+                        <label>Início do corte:</label>
+                        <input type="text" id="cut-start" placeholder="00:00:00" value="00:00:00">
+                        <label>Fim do corte:</label>
+                        <input type="text" id="cut-end" placeholder="00:00:00">
+                        <button class="btn btn-small" onclick="setCutPoint('start')">Marcar Início</button>
+                        <button class="btn btn-small" onclick="setCutPoint('end')">Marcar Fim</button>
+                    </div>
+                    <div class="timeline-bar">
+                        <div class="timeline-progress" id="timeline-progress"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Painel de Controles -->
+            <div class="controls-section">
+                <h2>Ferramentas</h2>
+                
+                <div class="tool-grid">
+                    <button class="tool-btn" onclick="analyzeVideo()" id="btn-analyze">
+                        <span class="tool-icon">🔍</span>
+                        <span class="tool-name">Analisar</span>
+                    </button>
+
+                    <button class="tool-btn" onclick="cutVideo()" id="btn-cut">
+                        <span class="tool-icon">✂️</span>
+                        <span class="tool-name">Cortar</span>
+                    </button>
+
+                    <button class="tool-btn" onclick="createThumbnail()" id="btn-thumbnail">
+                        <span class="tool-icon">🖼️</span>
+                        <span class="tool-name">Thumbnail</span>
+                    </button>
+
+                    <button class="tool-btn" onclick="optimizeVideo()" id="btn-optimize">
+                        <span class="tool-icon">⚡</span>
+                        <span class="tool-name">Otimizar YouTube</span>
+                    </button>
+
+                    <button class="tool-btn" onclick="removeSilence()" id="btn-silence">
+                        <span class="tool-icon">🔇</span>
+                        <span class="tool-name">Remover Silêncio</span>
+                    </button>
+
+                    <button class="tool-btn" onclick="extractAudio()" id="btn-audio">
+                        <span class="tool-icon">🎵</span>
+                        <span class="tool-name">Extrair Áudio</span>
+                    </button>
+                </div>
+
+                <!-- Chat/Comando IA -->
+                <div class="ai-chat">
+                    <h3>Comando por Texto (IA)</h3>
+                    <div id="chat-messages" class="chat-messages"></div>
+                    <div class="chat-input">
+                        <input type="text" id="ai-command" placeholder="Ex: Corte o vídeo do 00:01:00 até 00:03:00" 
+                               onkeypress="if(event.key==='Enter')sendAICommand()">
+                        <button class="btn btn-primary" onclick="sendAICommand()">Enviar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Área de Resultados -->
+        <div id="results" class="results" style="display: none;">
+            <h2>Resultados</h2>
+            <div id="results-content"></div>
+        </div>
+
+        <!-- Progress Indicator -->
+        <div id="progress" class="progress" style="display: none;">
+            <div class="progress-spinner"></div>
+            <p id="progress-text">Processando...</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
