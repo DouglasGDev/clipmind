@@ -231,6 +231,31 @@ header h1 {
     border: 1px solid #e0e0e0;
 }
 
+.chat-message.tool {
+    background: #fff8e1;
+    border-left: 3px solid #ffb300;
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    font-size: 0.85em;
+    max-width: 100%;
+    word-break: break-word;
+}
+
+/* Badge de status da IA */
+.status {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 5px 14px;
+    border-radius: 999px;
+    font-size: 0.85em;
+    font-weight: 600;
+    background: rgba(255,255,255,0.25);
+    color: white;
+}
+
+.status.ok { background: rgba(46, 125, 50, 0.9); }
+.status.warn { background: rgba(239, 108, 0, 0.9); }
+.status.fail { background: rgba(198, 40, 40, 0.9); }
+
 .chat-input {
     display: flex;
     gap: 10px;

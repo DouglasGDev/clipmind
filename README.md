@@ -121,9 +121,14 @@ cd clipmind
 pip install -r requirements.txt
 ```
 
-O `requirements.txt` instala o SDK oficial do LM Studio:
+O `requirements.txt` traz o SDK oficial do LM Studio e o servidor web:
+
 ```
-lmstudio>=0.3.0
+lmstudio>=1.5.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+jinja2>=3.1.2
 ```
 
 ### 4. Verificar instalação
@@ -137,11 +142,17 @@ ffmpeg -version
 # Verifica SDK do LM Studio
 python -c "import lmstudio; print('LM Studio SDK OK')"
 
-# Lista modelos disponíveis no LM Studio
-lms lm list
+# Lista modelos baixados e carregados no LM Studio
+lms ls     # baixados
+lms ps     # carregados em memória
+
+# Confere se o ClipMind enxerga a IA (conexão + modelo)
+python -c "import asyncio, agent; print(asyncio.run(agent.agent_status()))"
 ```
 
 Se todos os comandos acima funcionarem, você está pronto para usar o ClipMind!
+O último deve retornar `"connected": True`. Se vier `False` com o aviso de API
+token, veja [Autenticação do LM Studio](#autenticação-do-lm-studio-importante).
 
 ---
 
@@ -302,16 +313,53 @@ Arquivo salvo em: output/musica_audio.mp3
 
 ## Configuração
 
-### Trocar o modelo
+### Autenticação do LM Studio (importante)
 
-Edite a variável `MODEL_NAME` no topo do arquivo `editor_agent.py`:
+Por padrão o LM Studio **não** exige autenticação. Se você ativou o switch de
+autenticação em **Developer → Server Settings**, toda chamada (REST, SDK Python,
+SDK TypeScript) passa a exigir um API token.
 
-```python
-# Linha 23
-MODEL_NAME = "qwen2.5-14b-instruct"  # Modelo recomendado
-# MODEL_NAME = "qwen2.5-7b-instruct"  # Alternativa mais leve
-# MODEL_NAME = "seu-modelo-aqui"      # Qualquer modelo carregado no LM Studio
+No SDK Python atual (1.5.0) não há parâmetro para enviar token ao cliente local,
+então conecte-se a um servidor **sem autenticação exigida**:
+
+- LM Studio → aba **Developer** → **Server Settings** → desative o switch de
+  autenticação; e
+- deixe **Network Interface** em `127.0.0.1`, a menos que precise expor na rede
+  (interface `0.0.0.0` expõe seu modelo para qualquer dispositivo da LAN).
+
+Atenção: trocar a Network Interface para `127.0.0.1` **não** dispensa o token. A
+API interna usada pelo SDK (porta 41343) já é local e mesmo assim recusa a
+conexão enquanto o switch de autenticação estiver ligado. O que libera o SDK é
+desativar a autenticação.
+
+Sem isso o ClipMind mostra na tela exatamente qual é o bloqueio, em vez de
+falhar silencioso.
+
+### Modelo usado
+
+Por padrão o ClipMind **detecta o modelo**: usa o que estiver carregado no LM
+Studio; se nenhum estiver, usa o único LLM baixado. Para fixar um modelo:
+
+**Windows (PowerShell):**
+
+```powershell
+$env:CLIPMIND_MODEL = "qwen/qwen3.8-27b"
+python server.py
 ```
+
+**Linux/macOS:**
+
+```bash
+export CLIPMIND_MODEL="qwen/qwen3.8-27b"
+python server.py
+```
+
+Outras variáveis:
+
+| Variável | Padrão | Uso |
+|----------|--------|-----|
+| `CLIPMIND_MODEL` | auto | nome/chave do modelo no LM Studio |
+| `CLIPMIND_LMS_HOST` | auto-detect | `host:porta` da API local do LM Studio |
 
 ### Trocar a pasta de saída
 
@@ -351,25 +399,26 @@ OUTPUT_DIR = Path("./output")
 ```
 clipmind/
 ├── youtube_editor_tools.py   # Ferramentas FFmpeg (6 funções)
-├── editor_agent.py           # Agente LM Studio (loop de conversa)
+├── agent.py                  # Agente LM Studio: .act() + tool calling (usado por web e CLI)
+├── server.py                 # Interface web (FastAPI + WebSocket)
+├── editor_agent.py           # Interface de terminal (reaproveita agent.py)
+├── templates/index.html      # Página da interface
+├── static/style.css          # Estilos
+├── static/app.js             # Lógica da interface (upload, timeline, chat, eventos)
 ├── requirements.txt          # Dependências Python
 ├── README.md                 # Este arquivo
 ├── LICENSE                   # Licença MIT
-├── .gitignore                # Ignora output/, __pycache__/, etc.
-└── output/                   # Pasta gerada automaticamente
-    ├── video_cortado.mp4
-    ├── video_youtube.mp4
-    ├── video_capa.jpg
-    ├── video_audio.mp3
-    └── ...
+├── .gitignore                # Ignora output/, uploads/, __pycache__/, etc.
+└── output/                   # Gerada automaticamente com os arquivos editados
 ```
 
 ### Como funciona
 
-1. **Carregamento** — `editor_agent.py` carrega o modelo via `lms.llm(MODEL_NAME)`
-2. **Chat** — Cria objeto `lms.Chat(SYSTEM_PROMPT)` para manter histórico
-3. **Loop** — Usuário digita comando em português
-4. **Tool calling** — `model.act(chat, tools, on_message=...)` executa o loop automático:
+1. **Conexão** — `agent.py` abre `AsyncClient` na API local do LM Studio (porta
+   interna 41343) e resolve o modelo (`llm.model()` carrega sob demanda)
+2. **Chat** — mantém um `lms.Chat(SYSTEM_PROMPT)` compartilhado entre pedidos
+3. **Turno** — a interface (ou o CLI) chama `run_agent_turn(texto, on_event)`
+4. **Tool calling** — `llm.act(chat, TOOLS, on_message=...)` roda o loop automático:
    - LLM analisa o pedido
    - LLM escolhe a ferramenta apropriada
    - SDK executa a função Python
@@ -447,7 +496,10 @@ def adicionar_marca_dagua(video_path: str, imagem_path: str, posicao: str = "bot
         return message
 ```
 
-### 2. Importar em `editor_agent.py`
+### 2. Registrar em `agent.py`
+
+Importe e adicione à lista `TOOLS` — é ela que vai para o `.act()`, então web e
+CLI passam a conhecer a ferramenta ao mesmo tempo:
 
 ```python
 from youtube_editor_tools import (
@@ -459,12 +511,8 @@ from youtube_editor_tools import (
     extract_audio,
     adicionar_marca_dagua,  # <-- Nova ferramenta
 )
-```
 
-### 3. Adicionar à lista de ferramentas
-
-```python
-tools = [
+TOOLS = [
     inspect_video,
     cut_video,
     create_thumbnail,
@@ -475,9 +523,9 @@ tools = [
 ]
 ```
 
-### 4. Atualizar o system prompt (opcional)
+### 3. Atualizar o system prompt (opcional)
 
-Adicione descrição da nova ferramenta no `SYSTEM_PROMPT` em `editor_agent.py`:
+Adicione descrição da nova ferramenta no `SYSTEM_PROMPT` em `agent.py`:
 
 ```python
 SYSTEM_PROMPT = """...
@@ -513,24 +561,42 @@ winget install FFmpeg
 
 **Solução:**
 1. Abra o LM Studio
-2. Vá para "Local Server" e clique em **Start Server**
-3. Verifique se o modelo está carregado na aba "My Models"
-4. Teste no terminal:
+2. Vá para a aba **Developer** e inicie o servidor local
+3. Confira o que existe na máquina:
 
 ```bash
-lms lm list
+lms ps     # modelos carregados em memória
+lms ls     # modelos baixados
 ```
+
+Sem `CLIPMIND_MODEL`, o ClipMind usa o modelo carregado; se nenhum estiver, usa o
+único baixado. Com vários baixados e nenhum carregado, carregue um no LM Studio
+ou defina `CLIPMIND_MODEL`.
+
+### "The LM Studio API token provided was not recognized"
+
+**Causa:** o switch de autenticação está ligado em **Developer → Server Settings**.
+Com ele ligado, toda chamada do SDK precisa de um token — e o SDK Python 1.5.0
+não tem como enviar token ao cliente local.
+
+**Solução:** desative o switch de autenticação (ou, se precisar de auth, mantenha
+a Network Interface em `127.0.0.1` e acompanhe o suporte a token do SDK).
+
+> Nota: um bug do SDK 1.5.0 faz essa falha chegar como
+> `ValueError: dictionary update sequence element #0...` em vez do erro de
+> autenticação. O ClipMind reconhece esse texto e mostra o aviso correto.
 
 ### "O modelo não chama as ferramentas"
 
 **Causa:** Modelo não tem bom suporte a tool calling ou comando não está claro.
 
 **Solução:**
-1. Use modelos recomendados: `qwen2.5-14b-instruct` ou `qwen2.5-7b-instruct`
+1. Use um modelo com tool calling bom (ex: família Qwen 2.5 / Qwen 3)
 2. Seja específico nos comandos:
    - Ruim: "edita esse vídeo"
    - Bom: "Corte o vídeo aula.mp4 do 00:01:00 até 00:03:00"
-3. Verifique se o servidor LM Studio está rodando em `http://localhost:1234`
+3. Confira `GET /agent-status` (ou o selo no topo da interface) para ver se a IA
+   está conectada
 
 ### "Arquivo não encontrado"
 

@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupWebSocket();
     videoPlayer = document.getElementById('video-player');
     setupTimeline();
+    checkAgentStatus();
 });
 
 // WebSocket para feedback em tempo real
@@ -33,6 +34,38 @@ function handleWebSocketMessage(data) {
         showProgress(data.action);
     } else if (data.type === 'complete') {
         hideProgress();
+    } else if (data.type === 'agent') {
+        handleAgentEvent(data);
+    }
+}
+
+// Eventos vindos do loop de tool calling da IA
+function handleAgentEvent(event) {
+    switch (event.kind) {
+        case 'tool_call': {
+            const args = event.args && Object.keys(event.args).length
+                ? ` ${JSON.stringify(event.args)}`
+                : '';
+            addChatMessage('tool', `Chamando ${event.name}...${args}`);
+            showProgress(`${event.name} em execução`);
+            break;
+        }
+        case 'tool_result': {
+            const res = (event.result || '').slice(0, 220);
+            addChatMessage('tool', `${event.name || 'ferramenta'} → ${res}`);
+            hideProgress();
+            break;
+        }
+        case 'loading':
+            showProgress(`Carregando modelo no LM Studio... ${event.progress}%`);
+            break;
+        case 'error':
+            hideProgress();
+            addChatMessage('assistant', event.text);
+            break;
+        case 'answer':
+            hideProgress();
+            break;
     }
 }
 
@@ -342,17 +375,60 @@ async function extractAudio() {
 async function sendAICommand() {
     const input = document.getElementById('ai-command');
     const command = input.value.trim();
-    
+
     if (!command) return;
-    
+
     addChatMessage('user', command);
     input.value = '';
-    
-    // Aqui você integraria com o LM Studio
-    // Por enquanto, apenas mostra uma mensagem
-    setTimeout(() => {
-        addChatMessage('assistant', 'Comando recebido. Use os botões acima para executar as ações.');
-    }, 500);
+    input.disabled = true;
+    showProgress('IA pensando...');
+
+    try {
+        const formData = new FormData();
+        formData.append('message', command);
+
+        const response = await fetch('/chat', { method: 'POST', body: formData });
+        const data = await response.json();
+
+        hideProgress();
+        addChatMessage('assistant', data.answer || '(sem resposta)');
+
+        // Um pedido pode ter gerado arquivos novos
+        if (data.answer && data.answer.includes('salvo em:')) refreshResults();
+    } catch (error) {
+        hideProgress();
+        addChatMessage('assistant', `Erro ao falar com a IA: ${error.message}`);
+    } finally {
+        input.disabled = false;
+        input.focus();
+    }
+}
+
+function refreshResults() {
+    document.getElementById('results').style.display = 'block';
+}
+
+// Status da IA no carregamento
+async function checkAgentStatus() {
+    try {
+        const res = await fetch('/agent-status');
+        const status = await res.json();
+        const badge = document.getElementById('agent-status');
+        if (!badge) return;
+
+        if (status.connected && status.has_matching_model) {
+            badge.textContent = `IA conectada · ${status.model}`;
+            badge.className = 'status ok';
+        } else if (status.connected) {
+            badge.textContent = `LM Studio ok, mas modelo "${status.model}" não encontrado`;
+            badge.className = 'status warn';
+        } else {
+            badge.textContent = 'IA desconectada — abra o LM Studio e inicie o servidor';
+            badge.className = 'status fail';
+        }
+    } catch {
+        /* servidor fora do ar; nada a fazer */
+    }
 }
 
 function addChatMessage(role, text) {

@@ -1,0 +1,360 @@
+"""
+Agente LM Studio do ClipMind.
+
+Camada única de IA compartilhada pela interface web (server.py) e pelo CLI
+(editor_agent.py). Usa o SDK oficial com AsyncClient + .act(), que executa o
+loop de tool calling: o modelo escolhe a ferramenta, o SDK chama a função
+Python correspondente, o resultado volta para o modelo, e assim até a resposta.
+
+Configuração por variáveis de ambiente:
+    CLIPMIND_MODEL     nome/chave do modelo no LM Studio
+    CLIPMIND_LMS_HOST  host:porta da API local (padrão: descoberta automática)
+
+O SDK 1.5.0 não expõe parâmetro de token no AsyncClient, então o servidor do LM
+Studio precisa estar sem exigência de API token (veja AUTH_HINT abaixo).
+"""
+
+import asyncio
+import os
+from typing import Any, Awaitable, Callable, Optional
+
+import lmstudio as lms
+from lmstudio import AsyncClient, Chat
+
+from youtube_editor_tools import (
+    create_thumbnail,
+    cut_video,
+    extract_audio,
+    inspect_video,
+    optimize_for_youtube,
+    remove_silence,
+)
+
+
+MODEL_NAME = os.getenv("CLIPMIND_MODEL", "")
+LMS_HOST = os.getenv("CLIPMIND_LMS_HOST", "")
+
+TOOLS = [
+    inspect_video,
+    cut_video,
+    create_thumbnail,
+    optimize_for_youtube,
+    remove_silence,
+    extract_audio,
+]
+
+SYSTEM_PROMPT = """Você é o editor de vídeo do ClipMind. Você tem ferramentas reais que executam FFmpeg.
+
+Regras:
+- Quando o usuário pedir uma edição, CHAME a ferramenta apropriada. Não descreva comandos, execute.
+- Use o caminho de arquivo exatamente como o usuário informou.
+- Se faltar um dado obrigatório (por exemplo o caminho do vídeo), pergunte antes de executar.
+- Depois de executar, diga em uma frase o que foi feito e onde o arquivo foi salvo.
+- Responda sempre em português brasileiro.
+
+Ferramentas: inspect_video (analisar), cut_video (cortar), create_thumbnail (capa),
+optimize_for_youtube (otimizar), remove_silence (remover silêncios), extract_audio (extrair MP3).
+"""
+
+
+class AgentError(RuntimeError):
+    """Falha de comunicação com o LM Studio, com mensagem acionável."""
+
+
+AUTH_HINT = (
+    "O LM Studio está com autenticação por API token ativada, e o SDK Python "
+    "1.5.0 não tem como enviar token (o AsyncClient só aceita api_host). "
+    "Desative o switch de autenticação em Developer → Server Settings e reinicie "
+    "o servidor. Para não perder a proteção da rede, mantenha a Network "
+    "Interface em 127.0.0.1 em vez de 0.0.0.0."
+)
+
+# O SDK 1.5.0 faz dict(details) ao montar LMStudioServerError; quando o servidor
+# responde com a recusa de token, `details` é uma string e o dict() levanta
+# ValueError, perdendo a mensagem original. Nada na exceção denuncia auth, então
+# este marcador é a única pista disponível de que a falha é a recusa de token.
+_SDK_AUTH_MASK_MARKERS = ("dictionary update sequence",)
+
+
+def _is_masked_auth_failure(exc: BaseException) -> bool:
+    """Reconhece a recusa de token, mesmo quando o SDK a deforma."""
+    texto = str(exc).lower()
+    if any(m in texto for m in _SDK_AUTH_MASK_MARKERS):
+        return True
+    return "token" in texto or "authentication" in texto
+
+
+# Histórico compartilhado: criado no primeiro uso e mantido entre pedidos
+_chat: Optional[Chat] = None
+
+# Progresso bruto do SDK vem como dict/objeto variável; normalizamos para dict
+def _as_dict(part: Any) -> dict:
+    if isinstance(part, dict):
+        return part
+    to_dict = getattr(part, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    return {}
+
+
+def _text_from_parts(parts: Any) -> str:
+    """Extrai o texto legível de um conteúdo do SDK."""
+    if parts is None:
+        return ""
+    if isinstance(parts, str):
+        return parts
+    out: list[str] = []
+    for part in parts:
+        data = _as_dict(part)
+        if data.get("type") == "text":
+            out.append(str(data.get("text", "")))
+        elif isinstance(part, str):
+            out.append(part)
+    return "".join(out).strip()
+
+
+# O resultado de uma ferramenta chega em mensagem separada,identified only by
+# toolCallId; guardamos o nome visto na requisição para exibir o resultado com
+# contexto. Limite arbitrário: uma conversa raramente passa de dezenas de chamadas.
+_TOOL_NAMES: dict[str, str] = {}
+_TOOL_NAMES_MAX = 200
+
+
+def _describe_message(message: Any) -> list[dict]:
+    """
+    Converte um evento do .act() em eventos simples para a interface.
+
+    Retorna itens {'kind': 'tool_call'|'tool_result'|'text', ...}. Os nomes de
+    campo seguem o wire format do SDK 1.5.0 (camelCase: toolCallRequest,
+    toolCallResult, toolCallId) — não o snake_case das classes Python.
+    """
+    events: list[dict] = []
+    data = _as_dict(message)
+    content = data.get("content", [])
+
+    if isinstance(content, str):
+        if content.strip():
+            events.append({"kind": "text", "text": content})
+        return events
+
+    for part in content or []:
+        pdata = _as_dict(part)
+        ptype = str(pdata.get("type", ""))
+
+        if ptype == "toolCallRequest":
+            req = pdata.get("toolCallRequest") or {}
+            name = str(req.get("name") or "ferramenta")
+            call_id = req.get("id")
+            if call_id:
+                if len(_TOOL_NAMES) >= _TOOL_NAMES_MAX:
+                    _TOOL_NAMES.clear()
+                _TOOL_NAMES[str(call_id)] = name
+            events.append({
+                "kind": "tool_call",
+                "name": name,
+                "args": req.get("arguments") or {},
+            })
+        elif ptype == "toolCallResult":
+            call_id = pdata.get("toolCallId")
+            events.append({
+                "kind": "tool_result",
+                "name": _TOOL_NAMES.get(str(call_id), "") if call_id else "",
+                "result": str(pdata.get("content", "")),
+            })
+        elif ptype == "text":
+            text = str(pdata.get("text", "")).strip()
+            if text:
+                events.append({"kind": "text", "text": text})
+
+    return events
+
+
+def _client_kwargs() -> dict:
+    if LMS_HOST:
+        return {"api_host": LMS_HOST}
+    return {}
+
+
+def _load_progress(
+    on_event: Optional[Callable[[dict], Awaitable[None]]],
+    pendentes: Optional[list[asyncio.Future]] = None,
+) -> Optional[Callable[[float], None]]:
+    """
+    Constrói o callback de progresso do `llm.model()`.
+
+    Um 27B leva minutos para carregar; sem isso a interface parece travada.
+    O SDK chama a cada fração, então só emite quando o percentual inteiro muda.
+    """
+    if on_event is None:
+        return None
+
+    vistos: set[int] = set()
+
+    def callback(progress: float) -> None:
+        pct = int(round(progress * 100)) if progress <= 1 else int(round(progress))
+        if pct not in vistos:
+            vistos.add(pct)
+            _emit(on_event, {"kind": "loading", "progress": pct}, pendentes)
+
+    return callback
+
+
+async def _resolve_llm(
+    client: Any,
+    on_event: Optional[Callable[[dict], Awaitable[None]]] = None,
+    pendentes: Optional[list[asyncio.Future]] = None,
+) -> Any:
+    """
+    Retorna o modelo pronto para uso.
+
+    Sem CLIPMIND_MODEL definido, usa o modelo já carregado; se nenhum estiver
+    carregado, usa o único LLM baixado. `llm.model()` carrega sob demanda.
+    """
+    progress = _load_progress(on_event, pendentes)
+
+    if not MODEL_NAME:
+        loaded = await client.llm.list_loaded()
+        if loaded:
+            return loaded[0]
+
+        downloaded = await client.llm.list_downloaded()
+        llms_baixados = [m for m in downloaded if isinstance(m, lms.AsyncDownloadedLlm)]
+        if not llms_baixados:
+            raise AgentError(
+                "Nenhum modelo de linguagem baixado no LM Studio. Baixe um na "
+                "aba Discover (ex: um Qwen com suporte a tool calling)."
+            )
+        if len(llms_baixados) > 1:
+            nomes = ", ".join(m.model_key for m in llms_baixados[:8])
+            raise AgentError(
+                "Há mais de um modelo baixado e nenhum está carregado agora. "
+                "Carregue um no LM Studio ou defina CLIPMIND_MODEL. Opções: "
+                + nomes
+            )
+        return await client.llm.model(
+            llms_baixados[0].model_key, on_load_progress=progress
+        )
+
+    try:
+        return await client.llm.model(MODEL_NAME, on_load_progress=progress)
+    except lms.LMStudioModelNotFoundError:
+        downloaded = await client.llm.list_downloaded()
+        nomes = sorted({m.model_key for m in downloaded})
+        amostra = ", ".join(nomes[:12]) or "nenhum"
+        raise AgentError(
+            f"Modelo '{MODEL_NAME}' não existe no LM Studio. Baixe-o na aba "
+            f"Discover ou aponte para um modelo instalado com CLIPMIND_MODEL. "
+            f"Baixados: {amostra}"
+        ) from None
+
+
+async def run_agent_turn(
+    user_text: str,
+    on_event: Callable[[dict], Awaitable[None]],
+) -> str:
+    """
+    Executa um turno do agente: manda o texto para o modelo, transmite cada
+    ferramenta chamada via on_event e devolve a resposta final.
+    """
+    global _chat
+
+    if _chat is None:
+        _chat = Chat(SYSTEM_PROMPT)
+    _chat.add_user_message(user_text)
+
+    try:
+        pendentes: list[asyncio.Future] = []
+
+        async with AsyncClient(**_client_kwargs()) as client:
+            llm = await _resolve_llm(client, on_event, pendentes)
+
+            result = await llm.act(
+                _chat,
+                TOOLS,
+                on_message=lambda message: _forward(message, on_event, pendentes),
+            )
+
+            # Drena os eventos agendados para a resposta final não chegar na
+            # frente das linhas de ferramenta na interface.
+            if pendentes:
+                await asyncio.gather(*pendentes)
+
+            final_text = ""
+            for round_result in reversed(list(result.rounds)):
+                final_text = _text_from_parts(round_result.content)
+                if final_text:
+                    break
+
+            if not final_text:
+                final_text = "A IA terminou sem texto de resposta."
+
+            await on_event({"kind": "answer", "text": final_text})
+            return final_text
+
+    except AgentError:
+        raise
+    except Exception as e:
+        if _is_masked_auth_failure(e):
+            raise AgentError(AUTH_HINT) from e
+        if isinstance(e, (ConnectionError, OSError, lms.LMStudioTimeoutError)):
+            raise AgentError(
+                "LM Studio não acessível. Abra o LM Studio e inicie o servidor "
+                "(aba Developer). Detalhe: " + str(e)[:200]
+            ) from e
+        raise
+
+
+def _emit(
+    on_event: Callable[[dict], Awaitable[None]],
+    event: dict,
+    pendentes: Optional[list[asyncio.Future]] = None,
+) -> None:
+    """
+    Encaminha um evento do callback síncrono do SDK para o handler assíncrono.
+
+    O SDK chama on_message/on_load_progress de dentro do próprio event loop,
+    então criamos a task aqui; o futuro fica registrado para o chamador poder
+    aguardar a ordem correta antes de devolver a resposta.
+    """
+    task = asyncio.ensure_future(on_event(event))
+    if pendentes is not None:
+        pendentes.append(task)
+
+
+def _forward(
+    message: Any,
+    on_event: Callable[[dict], Awaitable[None]],
+    pendentes: Optional[list[asyncio.Future]] = None,
+) -> None:
+    for event in _describe_message(message):
+        _emit(on_event, event, pendentes)
+
+
+async def agent_status() -> dict:
+    """Verifica se o LM Studio está acessível e qual modelo será usado."""
+    try:
+        async with AsyncClient(**_client_kwargs()) as client:
+            loaded = [m.identifier for m in await client.llm.list_loaded()]
+            downloaded = [m.model_key for m in await client.llm.list_downloaded()]
+            alvo = MODEL_NAME or (loaded[0] if loaded else (downloaded[0] if downloaded else ""))
+            matching = [k for k in downloaded if alvo and alvo.lower() in k.lower()]
+            return {
+                "connected": True,
+                "model": alvo or "(nenhum)",
+                "auto_selected": not bool(MODEL_NAME),
+                "loaded_models": loaded,
+                "has_matching_model": bool(loaded) or bool(matching),
+                "downloaded_count": len(downloaded),
+            }
+    except Exception as e:
+        if _is_masked_auth_failure(e):
+            return {"connected": False, "model": MODEL_NAME, "error": AUTH_HINT}
+        return {
+            "connected": False,
+            "model": MODEL_NAME or "(auto)",
+            "error": "LM Studio inacessível na API local (porta 41343). "
+                     "Abra o LM Studio e inicie o servidor. " + str(e)[:200],
+        }

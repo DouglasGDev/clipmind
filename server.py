@@ -25,6 +25,7 @@ from youtube_editor_tools import (
     extract_audio,
     OUTPUT_DIR,
 )
+from agent import AgentError, agent_status, run_agent_turn
 
 
 app = FastAPI(title="ClipMind - Editor de Vídeo com IA")
@@ -67,6 +68,35 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
     except WebSocketDisconnect:
         active_connections.remove(websocket)
+
+
+@app.get("/agent-status")
+async def get_agent_status():
+    """Informa se a IA (LM Studio) está acessível."""
+    return await agent_status()
+
+
+@app.post("/chat")
+async def chat(message: str = Form(...)):
+    """
+    Turno do agente: a IA escolhe e executa ferramentas de verdade.
+
+    Cada chamada de ferramenta é transmitida em tempo real pelo WebSocket,
+    então a interface mostra a IA trabalhando enquanto o FFmpeg roda.
+    """
+    async def forward(event: dict):
+        await send_to_all({"type": "agent", **event})
+
+    try:
+        answer = await run_agent_turn(message, forward)
+        return {"answer": answer}
+    except AgentError as e:
+        await send_to_all({"type": "agent", "kind": "error", "text": str(e)})
+        return {"answer": str(e), "error": True}
+    except Exception as e:
+        detail = f"Falha inesperada no agente: {type(e).__name__}: {e}"
+        await send_to_all({"type": "agent", "kind": "error", "text": detail})
+        return {"answer": detail, "error": True}
 
 
 @app.post("/upload")
