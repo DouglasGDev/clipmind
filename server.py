@@ -53,7 +53,7 @@ async def send_to_all(message: dict):
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     """Página principal."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.websocket("/ws")
@@ -89,7 +89,7 @@ async def analyze_video(file_path: str = Form(...)):
     """Analisa o vídeo e retorna informações."""
     await send_to_all({"type": "processing", "action": "Analisando vídeo..."})
     
-    result = inspect_video(file_path)
+    result = await asyncio.to_thread(inspect_video, file_path)
     
     await send_to_all({"type": "complete", "action": "Análise completa"})
     return {"result": json.loads(result)}
@@ -105,7 +105,7 @@ async def cut_video_endpoint(
     """Corta o vídeo."""
     await send_to_all({"type": "processing", "action": "Cortando vídeo..."})
     
-    result = cut_video(file_path, start, end, duration)
+    result = await asyncio.to_thread(cut_video, file_path, start, end, duration)
     
     await send_to_all({"type": "complete", "action": "Corte completo"})
     return {"result": result, "output_path": result.split(": ")[-1] if "salvo em:" in result else None}
@@ -119,7 +119,7 @@ async def create_thumbnail_endpoint(
     """Cria thumbnail do vídeo."""
     await send_to_all({"type": "processing", "action": "Criando thumbnail..."})
     
-    result = create_thumbnail(file_path, time)
+    result = await asyncio.to_thread(create_thumbnail, file_path, time)
     
     await send_to_all({"type": "complete", "action": "Thumbnail criada"})
     return {"result": result, "output_path": result.split(": ")[-1] if "salva em:" in result else None}
@@ -133,7 +133,7 @@ async def optimize_video_endpoint(
     """Otimiza vídeo para YouTube."""
     await send_to_all({"type": "processing", "action": "Otimizando para YouTube..."})
     
-    result = optimize_for_youtube(file_path, resolution)
+    result = await asyncio.to_thread(optimize_for_youtube, file_path, resolution)
     
     await send_to_all({"type": "complete", "action": "Otimização completa"})
     return {"result": result, "output_path": result.split(": ")[-1] if "salvo em:" in result else None}
@@ -148,7 +148,7 @@ async def remove_silence_endpoint(
     """Remove silêncio do vídeo."""
     await send_to_all({"type": "processing", "action": "Removendo silêncio..."})
     
-    result = remove_silence(file_path, noise, duration)
+    result = await asyncio.to_thread(remove_silence, file_path, noise, duration)
     
     await send_to_all({"type": "complete", "action": "Silêncio removido"})
     return {"result": result, "output_path": result.split(": ")[-1] if "salvo em:" in result else None}
@@ -159,7 +159,7 @@ async def extract_audio_endpoint(file_path: str = Form(...)):
     """Extrai áudio do vídeo."""
     await send_to_all({"type": "processing", "action": "Extraindo áudio..."})
     
-    result = extract_audio(file_path)
+    result = await asyncio.to_thread(extract_audio, file_path)
     
     await send_to_all({"type": "complete", "action": "Áudio extraído"})
     return {"result": result, "output_path": result.split(": ")[-1] if "salvo em:" in result else None}
