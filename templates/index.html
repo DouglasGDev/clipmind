@@ -8,107 +8,117 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>ClipMind</h1>
-            <p class="subtitle">Editor de Vídeo Inteligente com IA Local</p>
-            <span id="agent-status" class="status">Verificando IA...</span>
-        </header>
+    <header class="topbar">
+        <div class="brand">
+            <span class="brand-mark">🎬</span>
+            <div>
+                <h1>ClipMind</h1>
+                <p>Editor de vídeo com IA local</p>
+            </div>
+        </div>
+        <div class="topbar-actions">
+            <button id="agent-status" class="status" type="button">Verificando IA...</button>
+            <button id="btn-new-chat" class="btn btn-ghost" type="button">Nova conversa</button>
+        </div>
+    </header>
 
-        <div class="main-content">
-            <!-- Área de Upload e Preview -->
-            <div class="video-section">
+    <main class="layout">
+        <section class="column column-video">
+            <div class="card">
                 <div id="upload-area" class="upload-area">
                     <div class="upload-icon">📹</div>
-                    <p>Arraste um vídeo aqui ou clique para selecionar</p>
+                    <p>Arraste um vídeo ou selecione um arquivo</p>
                     <input type="file" id="video-input" accept="video/*" hidden>
-                    <button class="btn btn-primary" onclick="document.getElementById('video-input').click()">
-                        Selecionar Vídeo
-                    </button>
+                    <button class="btn btn-primary" id="btn-pick-video" type="button">Selecionar vídeo</button>
                 </div>
 
-                <div id="video-preview" class="video-preview" style="display: none;">
-                    <video id="video-player" controls></video>
-                    <div class="video-info" id="video-info"></div>
-                </div>
-
-                <!-- Timeline Simples -->
-                <div id="timeline" class="timeline" style="display: none;">
-                    <div class="timeline-controls">
-                        <label>Início do corte:</label>
-                        <input type="text" id="cut-start" placeholder="00:00:00" value="00:00:00">
-                        <label>Fim do corte:</label>
-                        <input type="text" id="cut-end" placeholder="00:00:00">
-                        <button class="btn btn-small" onclick="setCutPoint('start')">Marcar Início</button>
-                        <button class="btn btn-small" onclick="setCutPoint('end')">Marcar Fim</button>
+                <div id="video-preview" class="video-preview" hidden>
+                    <video id="video-player" controls preload="metadata"></video>
+                    <div class="video-meta">
+                        <span id="video-name" class="video-name"></span>
+                        <button class="btn btn-small btn-ghost" id="btn-change-video" type="button">Trocar</button>
                     </div>
-                    <div class="timeline-bar">
+                </div>
+
+                <div id="timeline" class="timeline" hidden>
+                    <div class="timeline-fields">
+                        <label class="mini-field">Início
+                            <input type="text" id="cut-start" value="00:00:00" placeholder="00:00:00">
+                        </label>
+                        <label class="mini-field">Fim
+                            <input type="text" id="cut-end" placeholder="00:00:00">
+                        </label>
+                        <button class="btn btn-small" type="button" onclick="setCutPoint('start')">Marcar início</button>
+                        <button class="btn btn-small" type="button" onclick="setCutPoint('end')">Marcar fim</button>
+                    </div>
+                    <div class="timeline-bar" id="timeline-bar">
                         <div class="timeline-progress" id="timeline-progress"></div>
                     </div>
-                </div>
-            </div>
-
-            <!-- Painel de Controles -->
-            <div class="controls-section">
-                <h2>Ferramentas</h2>
-                
-                <div class="tool-grid">
-                    <button class="tool-btn" onclick="analyzeVideo()" id="btn-analyze">
-                        <span class="tool-icon">🔍</span>
-                        <span class="tool-name">Analisar</span>
-                    </button>
-
-                    <button class="tool-btn" onclick="cutVideo()" id="btn-cut">
-                        <span class="tool-icon">✂️</span>
-                        <span class="tool-name">Cortar</span>
-                    </button>
-
-                    <button class="tool-btn" onclick="createThumbnail()" id="btn-thumbnail">
-                        <span class="tool-icon">🖼️</span>
-                        <span class="tool-name">Thumbnail</span>
-                    </button>
-
-                    <button class="tool-btn" onclick="optimizeVideo()" id="btn-optimize">
-                        <span class="tool-icon">⚡</span>
-                        <span class="tool-name">Otimizar YouTube</span>
-                    </button>
-
-                    <button class="tool-btn" onclick="removeSilence()" id="btn-silence">
-                        <span class="tool-icon">🔇</span>
-                        <span class="tool-name">Remover Silêncio</span>
-                    </button>
-
-                    <button class="tool-btn" onclick="extractAudio()" id="btn-audio">
-                        <span class="tool-icon">🎵</span>
-                        <span class="tool-name">Extrair Áudio</span>
-                    </button>
-                </div>
-
-                <!-- Chat/Comando IA -->
-                <div class="ai-chat">
-                    <h3>Comando por Texto (IA)</h3>
-                    <div id="chat-messages" class="chat-messages"></div>
-                    <div class="chat-input">
-                        <input type="text" id="ai-command" placeholder="Ex: Corte o vídeo do 00:01:00 até 00:03:00" 
-                               onkeypress="if(event.key==='Enter')sendAICommand()">
-                        <button class="btn btn-primary" onclick="sendAICommand()">Enviar</button>
+                    <div class="timeline-times">
+                        <span id="current-time">00:00:00</span>
+                        <span id="total-time">00:00:00</span>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Área de Resultados -->
-        <div id="results" class="results" style="display: none;">
+            <div class="card chat-card">
+                <div class="card-header">
+                    <h2>IA</h2>
+                    <span class="muted" id="chat-state">pronta</span>
+                </div>
+                <div id="chat-messages" class="chat-messages"></div>
+                <div class="chat-input">
+                    <input type="text" id="ai-command" placeholder="Ex: corte de 00:01:00 até 00:03:00" autocomplete="off">
+                    <button class="btn btn-primary" id="btn-send" type="button">Enviar</button>
+                </div>
+            </div>
+
+            <div class="card" id="video-info-card" hidden>
+                <div class="card-header">
+                    <h2>Informações</h2>
+                </div>
+                <dl id="video-info" class="info-grid"></dl>
+            </div>
+        </section>
+
+        <section class="column column-tools">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Ferramentas</h2>
+                    <span class="muted" id="tool-count"></span>
+                </div>
+                <div id="tool-list" class="tool-list"></div>
+            </div>
+
+            <div class="card tool-form-card" id="tool-form-card" hidden>
+                <div class="card-header">
+                    <h2 id="tool-form-title">Ferramenta</h2>
+                    <button class="icon-btn" id="btn-close-form" type="button" aria-label="Fechar">✕</button>
+                </div>
+                <form id="tool-form" class="tool-form"></form>
+                <div id="tool-result" class="tool-result" hidden></div>
+            </div>
+        </section>
+    </main>
+
+    <section class="card results-card">
+        <div class="card-header">
             <h2>Resultados</h2>
-            <div id="results-content"></div>
+            <div class="header-buttons">
+                <button class="btn btn-small btn-ghost" id="btn-more-results" type="button" hidden>Mostrar mais</button>
+                <button class="btn btn-small btn-ghost" id="btn-refresh-results" type="button">Atualizar</button>
+            </div>
         </div>
+        <div id="results-empty" class="empty-state">Nenhum arquivo gerado ainda.</div>
+        <div id="results-grid" class="results-grid"></div>
+    </section>
 
-        <!-- Progress Indicator -->
-        <div id="progress" class="progress" style="display: none;">
-            <div class="progress-spinner"></div>
-            <p id="progress-text">Processando...</p>
-        </div>
+    <div id="progress" class="progress" hidden>
+        <span class="spinner"></span>
+        <span id="progress-text">Processando...</span>
     </div>
+
+    <div id="toast" class="toast" hidden></div>
 
     <script src="/static/app.js"></script>
 </body>

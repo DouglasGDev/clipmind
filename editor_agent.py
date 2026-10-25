@@ -31,10 +31,14 @@ def exibir_ajuda() -> None:
     print("\nExemplos de uso:")
     print('  "Analise o vídeo C:/Videos/meu_video.mp4"')
     print('  "Corte o vídeo video.mp4 do 00:01:00 até 00:03:30"')
-    print('  "Crie uma thumbnail do vídeo vlog.mp4 aos 10 segundos"')
-    print('  "Otimize o vídeo final.mp4 para o YouTube"')
-    print('  "Remova os silêncios do vídeo podcast.mp4"')
-    print('  "Extraia o áudio do vídeo musica.mp4"')
+    print('  "Remova os silêncios de podcast.mp4 e normalize o volume"')
+    print('  "Junte intro.mp4 e aula.mp4 em um único vídeo"')
+    print('  "Deixe o vídeo vertical para Shorts com fundo desfocado"')
+    print('  "Otimize final.mp4 para o YouTube e crie uma thumbnail aos 10s"')
+    print('  "Corte os trechos 00:00:05-00:00:12 e 00:02:00-00:02:40 de aula.mp4"')
+    print('  "Escreva \'Inscreva-se\' no rodapé do vídeo"')
+    print('  "Grave a legenda legenda.srt no vídeo"')
+    print('  "Extraia o áudio de musica.mp4 e converta o vídeo para webm"')
     print("\n" + "=" * 60 + "\n")
 
 
@@ -82,7 +86,7 @@ async def principal() -> None:
     print("  Powered by LM Studio + FFmpeg")
     print("=" * 60)
     print(f"\nModelo configurado: {MODEL_NAME}")
-    print(f"Ferramentas: {', '.join(t.__name__ for t in TOOLS)}\n")
+    print(f"Ferramentas: {len(TOOLS)} registradas (digite 'ajuda' para exemplos)\n")
 
     status = await agent_status()
     if not status.get("connected"):

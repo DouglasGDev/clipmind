@@ -22,12 +22,29 @@ import lmstudio as lms
 from lmstudio import AsyncClient, Chat
 
 from youtube_editor_tools import (
+    add_music,
+    add_text,
+    burn_subtitles,
+    change_speed,
+    compress_video,
+    convert_video,
+    create_contact_sheet,
+    create_gif,
     create_thumbnail,
+    crop_video,
+    cut_multiple_segments,
     cut_video,
+    detect_scenes,
     extract_audio,
+    fade_video,
     inspect_video,
+    join_videos,
+    loop_video,
+    normalize_audio,
     optimize_for_youtube,
     remove_silence,
+    resize_for_shorts,
+    rotate_video,
 )
 
 
@@ -36,24 +53,65 @@ LMS_HOST = os.getenv("CLIPMIND_LMS_HOST", "")
 
 TOOLS = [
     inspect_video,
+    detect_scenes,
     cut_video,
-    create_thumbnail,
-    optimize_for_youtube,
+    cut_multiple_segments,
     remove_silence,
+    join_videos,
+    optimize_for_youtube,
+    resize_for_shorts,
+    compress_video,
+    convert_video,
+    create_thumbnail,
+    create_contact_sheet,
+    create_gif,
     extract_audio,
+    normalize_audio,
+    add_music,
+    change_speed,
+    fade_video,
+    rotate_video,
+    crop_video,
+    loop_video,
+    add_text,
+    burn_subtitles,
 ]
 
-SYSTEM_PROMPT = """Você é o editor de vídeo do ClipMind. Você tem ferramentas reais que executam FFmpeg.
+SYSTEM_PROMPT = """Você é o editor de vídeo do ClipMind. Você tem ferramentas reais que executam FFmpeg de verdade e geram arquivos em ./output.
 
 Regras:
 - Quando o usuário pedir uma edição, CHAME a ferramenta apropriada. Não descreva comandos, execute.
 - Use o caminho de arquivo exatamente como o usuário informou.
 - Se faltar um dado obrigatório (por exemplo o caminho do vídeo), pergunte antes de executar.
+- Você pode encadear ferramentas: use a saída de uma como entrada da próxima (o resultado informa o caminho salvo).
+- Antes de recortar ou aplicar efeitos, se não souber a duração/resolução, use inspect_video primeiro.
 - Depois de executar, diga em uma frase o que foi feito e onde o arquivo foi salvo.
-- Responda sempre em português brasileiro.
+- Responda sempre em português brasileiro, de forma curta.
 
-Ferramentas: inspect_video (analisar), cut_video (cortar), create_thumbnail (capa),
-optimize_for_youtube (otimizar), remove_silence (remover silêncios), extract_audio (extrair MP3).
+Ferramentas disponíveis:
+- inspect_video: metadados do vídeo (duração, resolução, codecs, fps).
+- detect_scenes: lista os cortes de cena com tempo e intensidade.
+- cut_video: extrai um trecho (start + end ou duration).
+- cut_multiple_segments: extrai vários trechos e junta em um só (formato "inicio-fim, inicio-fim").
+- remove_silence: remove pausas/silêncios, mantendo áudio e vídeo sincronizados.
+- join_videos: junta vários vídeos em sequência.
+- optimize_for_youtube: H.264/AAC com faststart, escalando sem distorcer.
+- resize_for_shorts: vertical 1080x1920, com fundo desfocado (blur) ou corte (crop).
+- compress_video: reduz para um tamanho alvo em MB (2 passadas).
+- convert_video: converte para mp4/mkv/webm/mov.
+- create_thumbnail: extrai um frame como capa JPG.
+- create_contact_sheet: grade de frames para pré-visualizar o vídeo.
+- create_gif: GIF animado de um trecho.
+- extract_audio: extrai o áudio em mp3/wav/m4a.
+- normalize_audio: normaliza o volume para loudness de YouTube (-14 LUFS por padrão).
+- add_music: adiciona música de fundo, podendo manter ou substituir o áudio original.
+- change_speed: acelera ou desacelera (0.25x a 4x) com áudio sincronizado.
+- fade_video: fade de entrada e/ou saída.
+- rotate_video: gira 90/180/270 graus.
+- crop_video: recorta uma área (largura, altura, x, y).
+- loop_video: repete o vídeo N vezes.
+- add_text: escreve um texto sobre o vídeo (posição, tamanho, cor, tempo).
+- burn_subtitles: grava legendas .srt/.ass/.vtt dentro do vídeo.
 """
 
 
@@ -251,6 +309,12 @@ async def _resolve_llm(
         ) from None
 
 
+def reset_chat() -> None:
+    """Descarta o histórico para o próximo turno começar do zero."""
+    global _chat
+    _chat = None
+
+
 async def run_agent_turn(
     user_text: str,
     on_event: Callable[[dict], Awaitable[None]],
@@ -299,7 +363,22 @@ async def run_agent_turn(
     except Exception as e:
         if _is_masked_auth_failure(e):
             raise AgentError(AUTH_HINT) from e
-        if isinstance(e, (ConnectionError, OSError, lms.LMStudioTimeoutError)):
+        texto = str(e).lower()
+        sem_conexao = (
+            isinstance(
+                e,
+                (
+                    ConnectionError,
+                    OSError,
+                    lms.LMStudioTimeoutError,
+                    lms.LMStudioClientError,
+                    lms.LMStudioWebsocketError,
+                ),
+            )
+            or "not reachable" in texto
+            or "is lm studio running" in texto
+        )
+        if sem_conexao:
             raise AgentError(
                 "LM Studio não acessível. Abra o LM Studio e inicie o servidor "
                 "(aba Developer). Detalhe: " + str(e)[:200]

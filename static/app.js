@@ -1,30 +1,49 @@
-// ClipMind - Interface JavaScript
+// ClipMind - interface do editor
 let currentVideoPath = null;
+let currentVideoName = "";
 let videoPlayer = null;
 let ws = null;
+let tools = [];
+let selectedTool = null;
+let knownOutputs = new Set();
+let resultsFirstLoad = true;
+let refreshTimer = null;
+let myTurnId = null;
+let allOutputs = [];
+let resultsLimit = 12;
 
-// Inicialização
+const $ = (id) => document.getElementById(id);
+
 document.addEventListener('DOMContentLoaded', () => {
+    videoPlayer = $('video-player');
     setupDragDrop();
     setupVideoInput();
-    setupWebSocket();
-    videoPlayer = document.getElementById('video-player');
+    setupChat();
     setupTimeline();
+    setupButtons();
+    setupWebSocket();
     checkAgentStatus();
+    loadTools();
+    refreshResults();
 });
 
-// WebSocket para feedback em tempo real
+// ---------------------------------------------------------------- WebSocket
+
 function setupWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    
+
     ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch {
+            return;
+        }
         handleWebSocketMessage(data);
     };
-    
+
     ws.onclose = () => {
-        console.log('WebSocket fechado, reconectando...');
         setTimeout(setupWebSocket, 3000);
     };
 }
@@ -34,457 +53,759 @@ function handleWebSocketMessage(data) {
         showProgress(data.action);
     } else if (data.type === 'complete') {
         hideProgress();
+    } else if (data.type === 'chat_reset') {
+        clearChat();
     } else if (data.type === 'agent') {
         handleAgentEvent(data);
     }
 }
 
-// Eventos vindos do loop de tool calling da IA
 function handleAgentEvent(event) {
+    const isMine = Boolean(myTurnId) && event.turn_id === myTurnId;
+
     switch (event.kind) {
-        case 'tool_call': {
-            const args = event.args && Object.keys(event.args).length
-                ? ` ${JSON.stringify(event.args)}`
-                : '';
-            addChatMessage('tool', `Chamando ${event.name}...${args}`);
-            showProgress(`${event.name} em execução`);
+        case 'tool_call':
+            addChatMessage('tool', `▸ ${event.name}${summarizeArgs(event.args)}`);
+            showProgress(`${event.name}...`);
             break;
-        }
         case 'tool_result': {
-            const res = (event.result || '').slice(0, 220);
-            addChatMessage('tool', `${event.name || 'ferramenta'} → ${res}`);
+            const text = String(event.result || '').trim();
+            const short = text.length > 220 ? `${text.slice(0, 220)}…` : text;
+            addChatMessage('tool', `✓ ${event.name || 'ferramenta'}${short ? ` · ${short}` : ''}`);
             hideProgress();
+            if (/salv[oa] em:/i.test(text)) scheduleResultsRefresh();
             break;
         }
         case 'loading':
-            showProgress(`Carregando modelo no LM Studio... ${event.progress}%`);
+            showProgress(`Carregando modelo… ${event.progress}%`);
             break;
         case 'error':
             hideProgress();
-            addChatMessage('assistant', event.text);
+            // O pedido que originou o erro recebe o texto na resposta HTTP.
+            if (!isMine) addChatMessage('assistant error', event.text);
             break;
         case 'answer':
             hideProgress();
+            if (!isMine && event.text) addChatMessage('assistant', event.text);
             break;
     }
 }
 
-// Drag and Drop
+function summarizeArgs(args) {
+    if (!args || typeof args !== 'object') return '';
+    const parts = [];
+    if (args.video_path) parts.push(baseName(args.video_path));
+    if (args.video_paths) parts.push(baseName(String(args.video_paths).split(',')[0]) + '…');
+    if (args.start) parts.push(`de ${args.start}`);
+    if (args.end) parts.push(`até ${args.end}`);
+    if (args.duration) parts.push(`${args.duration}s`);
+    if (args.segments) parts.push(String(args.segments));
+    if (args.text) parts.push(`“${String(args.text).slice(0, 40)}”`);
+    if (args.format) parts.push(String(args.format));
+    return parts.length ? ` · ${parts.join(' ')}` : '';
+}
+
+// ---------------------------------------------------------------- Upload
+
 function setupDragDrop() {
-    const uploadArea = document.getElementById('upload-area');
-    
-    uploadArea.addEventListener('dragover', (e) => {
+    const area = $('upload-area');
+
+    area.addEventListener('dragover', (e) => {
         e.preventDefault();
-        uploadArea.style.borderColor = '#764ba2';
-        uploadArea.style.background = '#f8f9ff';
+        area.classList.add('dragging');
     });
-    
-    uploadArea.addEventListener('dragleave', () => {
-        uploadArea.style.borderColor = '#667eea';
-        uploadArea.style.background = 'white';
-    });
-    
-    uploadArea.addEventListener('drop', (e) => {
+
+    area.addEventListener('dragleave', () => area.classList.remove('dragging'));
+
+    area.addEventListener('drop', (e) => {
         e.preventDefault();
-        uploadArea.style.borderColor = '#667eea';
-        uploadArea.style.background = 'white';
-        
+        area.classList.remove('dragging');
         const file = e.dataTransfer.files[0];
-        if (file && file.type.startsWith('video/')) {
-            handleVideoFile(file);
-        }
+        if (file && file.type.startsWith('video/')) handleVideoFile(file);
     });
 }
 
-// Input de vídeo
 function setupVideoInput() {
-    const input = document.getElementById('video-input');
-    input.addEventListener('change', (e) => {
+    $('btn-pick-video').addEventListener('click', () => $('video-input').click());
+    $('btn-change-video').addEventListener('click', () => $('video-input').click());
+    $('video-input').addEventListener('change', (e) => {
         const file = e.target.files[0];
-        if (file) {
-            handleVideoFile(file);
-        }
+        if (file) handleVideoFile(file);
+        e.target.value = '';
     });
 }
 
 async function handleVideoFile(file) {
     showProgress('Enviando vídeo...');
-    
     const formData = new FormData();
     formData.append('file', file);
-    
+
     try {
-        const response = await fetch('/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
+        const response = await fetch('/upload', { method: 'POST', body: formData });
+        if (!response.ok) throw new Error(`servidor respondeu ${response.status}`);
         const data = await response.json();
+
         currentVideoPath = data.file_path;
-        
-        // Mostra preview do vídeo
-        const videoURL = URL.createObjectURL(file);
-        videoPlayer.src = videoURL;
-        
-        document.getElementById('upload-area').style.display = 'none';
-        document.getElementById('video-preview').style.display = 'block';
-        document.getElementById('timeline').style.display = 'block';
-        
-        // Habilita botões
-        enableToolButtons();
-        
-        hideProgress();
-        addChatMessage('assistant', `Vídeo carregado: ${file.name}`);
-        
+        currentVideoName = data.name || file.name;
+        showVideo(URL.createObjectURL(file), currentVideoName);
+        addChatMessage('assistant', `Vídeo carregado: ${currentVideoName}`);
     } catch (error) {
+        addChatMessage('assistant error', `Falha ao enviar o vídeo: ${error.message}`);
+    } finally {
         hideProgress();
-        addChatMessage('assistant', `Erro ao enviar vídeo: ${error.message}`);
     }
 }
 
-// Timeline
-function setupTimeline() {
-    const timelineBar = document.querySelector('.timeline-bar');
-    
-    timelineBar.addEventListener('click', (e) => {
-        if (!videoPlayer || !videoPlayer.duration) return;
-        
-        const rect = timelineBar.getBoundingClientRect();
-        const percent = (e.clientX - rect.left) / rect.width;
-        const time = percent * videoPlayer.duration;
-        
-        videoPlayer.currentTime = time;
-        updateTimelineProgress();
-    });
-    
-    videoPlayer.addEventListener('timeupdate', updateTimelineProgress);
+function showVideo(url, name) {
+    videoPlayer.src = url;
+    videoPlayer.load();
+    $('video-name').textContent = name;
+    $('upload-area').hidden = true;
+    $('video-preview').hidden = false;
+    $('timeline').hidden = false;
+    updateTimelineMeta();
+    loadVideoInfo();
 }
 
-function updateTimelineProgress() {
-    if (!videoPlayer || !videoPlayer.duration) return;
-    
-    const percent = (videoPlayer.currentTime / videoPlayer.duration) * 100;
-    document.getElementById('timeline-progress').style.width = `${percent}%`;
+function useVideoFile(path, url, name) {
+    currentVideoPath = path;
+    currentVideoName = name;
+    showVideo(url, name);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ---------------------------------------------------------------- Timeline
+
+function setupTimeline() {
+    $('timeline-bar').addEventListener('click', (e) => {
+        if (!videoPlayer.duration) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const percent = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+        videoPlayer.currentTime = percent * videoPlayer.duration;
+        updateTimelineMeta();
+    });
+
+    videoPlayer.addEventListener('timeupdate', updateTimelineMeta);
+    videoPlayer.addEventListener('loadedmetadata', updateTimelineMeta);
+}
+
+function updateTimelineMeta() {
+    const duration = videoPlayer.duration;
+    if (!duration || Number.isNaN(duration)) return;
+
+    const current = videoPlayer.currentTime || 0;
+    $('timeline-progress').style.width = `${(current / duration) * 100}%`;
+    $('current-time').textContent = formatTime(current);
+    $('total-time').textContent = formatTime(duration);
 }
 
 function setCutPoint(type) {
-    if (!videoPlayer) return;
-    
-    const time = formatTime(videoPlayer.currentTime);
-    
-    if (type === 'start') {
-        document.getElementById('cut-start').value = time;
-    } else {
-        document.getElementById('cut-end').value = time;
+    if (!videoPlayer.duration) {
+        addChatMessage('assistant', 'Carregue um vídeo para marcar os pontos de corte.');
+        return;
     }
+    const input = $(type === 'start' ? 'cut-start' : 'cut-end');
+    input.value = formatTime(videoPlayer.currentTime);
 }
 
 function formatTime(seconds) {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-// Ferramentas
-function enableToolButtons() {
-    document.querySelectorAll('.tool-btn').forEach(btn => {
-        btn.disabled = false;
+function baseName(path) {
+    return String(path).split(/[\\/]/).pop() || String(path);
+}
+
+// ---------------------------------------------------------------- Informações
+
+let infoSeq = 0;
+
+async function loadVideoInfo() {
+    const seq = ++infoSeq;
+    const card = $('video-info-card');
+    if (!currentVideoPath) {
+        card.hidden = true;
+        return;
+    }
+
+    try {
+        const response = await fetch(`/media-info?path=${encodeURIComponent(currentVideoPath)}`);
+        if (!response.ok) throw new Error();
+        const data = await response.json();
+        if (seq !== infoSeq) return;
+
+        const streams = data.streams || [];
+        const video = streams.find((s) => s.tipo === 'video') || {};
+        const audio = streams.find((s) => s.tipo === 'audio') || {};
+        const [num, den] = String(video.fps || '').split('/');
+        const fps = Number(den) ? `${(Number(num) / Number(den)).toFixed(2).replace(/\.00$/, '')} fps` : (video.fps || '—');
+
+        const rows = [
+            ['Duração', data.duracao_formato || '—'],
+            ['Resolução', video.resolucao || '—'],
+            ['FPS', fps],
+            ['Vídeo', video.codec || '—'],
+            ['Áudio', audio.codec || 'sem áudio'],
+            ['Tamanho', data.tamanho_bytes ? formatSize(data.tamanho_bytes) : '—'],
+        ];
+
+        const list = $('video-info');
+        list.textContent = '';
+        for (const [label, value] of rows) {
+            const term = document.createElement('dt');
+            term.textContent = label;
+            const detail = document.createElement('dd');
+            detail.textContent = value;
+            list.append(term, detail);
+        }
+        card.hidden = false;
+    } catch {
+        if (seq === infoSeq) card.hidden = true;
+    }
+}
+
+// ---------------------------------------------------------------- Ferramentas
+
+async function loadTools() {
+    try {
+        const response = await fetch('/tools');
+        tools = await response.json();
+        renderToolList();
+        $('tool-count').textContent = `${tools.length} ferramentas`;
+    } catch (error) {
+        $('tool-list').textContent = 'Não foi possível carregar as ferramentas.';
+    }
+}
+
+function renderToolList() {
+    const list = $('tool-list');
+    list.textContent = '';
+
+    const groups = new Map();
+    for (const tool of tools) {
+        if (!groups.has(tool.group)) groups.set(tool.group, []);
+        groups.get(tool.group).push(tool);
+    }
+
+    for (const [group, items] of groups) {
+        const section = document.createElement('div');
+        section.className = 'tool-group';
+
+        const title = document.createElement('h3');
+        title.textContent = group;
+        section.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.className = 'tool-grid';
+
+        for (const tool of items) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'tool-btn';
+            button.dataset.tool = tool.name;
+            button.disabled = !tool.available;
+
+            const icon = document.createElement('span');
+            icon.className = 'tool-icon';
+            icon.textContent = tool.icon || '🛠️';
+            const label = document.createElement('span');
+            label.className = 'tool-label';
+            label.textContent = tool.label;
+
+            button.append(icon, label);
+            button.addEventListener('click', () => openTool(tool.name));
+            grid.appendChild(button);
+        }
+
+        section.appendChild(grid);
+        list.appendChild(section);
+    }
+}
+
+function openTool(name) {
+    const tool = tools.find((item) => item.name === name);
+    if (!tool) return;
+
+    selectedTool = tool;
+    document.querySelectorAll('.tool-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.tool === name);
+    });
+
+    $('tool-form-card').hidden = false;
+    $('tool-form-title').textContent = `${tool.icon || ''} ${tool.label}`.trim();
+    $('tool-result').hidden = true;
+    $('tool-result').textContent = '';
+
+    const form = $('tool-form');
+    form.textContent = '';
+    for (const field of tool.fields) {
+        form.appendChild(buildField(field));
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'form-actions';
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'btn btn-primary';
+    submit.textContent = 'Executar';
+    actions.appendChild(submit);
+    form.appendChild(actions);
+
+    form.onsubmit = (event) => {
+        event.preventDefault();
+        runSelectedTool(submit);
+    };
+
+    $('tool-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function buildField(field) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'field';
+
+    const label = document.createElement('label');
+    label.textContent = field.label || field.name;
+    label.htmlFor = `field-${field.name}`;
+    wrapper.appendChild(label);
+
+    const row = document.createElement('div');
+    row.className = 'field-row';
+
+    let input;
+    if (field.type === 'select') {
+        input = document.createElement('select');
+        for (const option of field.options || []) {
+            const opt = document.createElement('option');
+            opt.value = option;
+            opt.textContent = option;
+            input.appendChild(opt);
+        }
+        if (field.default) input.value = field.default;
+    } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.autocomplete = 'off';
+        if (field.placeholder) input.placeholder = field.placeholder;
+        if (field.default) input.value = field.default;
+        if (field.type === 'video' && currentVideoPath) {
+            input.value = currentVideoPath;
+        }
+    }
+    input.id = `field-${field.name}`;
+    input.name = field.name;
+    input.dataset.fieldType = field.type || 'text';
+    row.appendChild(input);
+
+    if (field.type === 'video') {
+        row.appendChild(pathButton('Usar atual', () => {
+            if (!currentVideoPath) {
+                toast('Nenhum vídeo carregado.');
+                return;
+            }
+            input.value = currentVideoPath;
+        }));
+        row.appendChild(pathButton('Escolher', () => pickAndUpload(input, 'video/*', true)));
+    } else if (field.name === 'music_path') {
+        row.appendChild(pathButton('Enviar', () => pickAndUpload(input, 'audio/*', false)));
+    } else if (field.name === 'subtitle_path') {
+        row.appendChild(pathButton('Enviar', () => pickAndUpload(input, '.srt,.ass,.vtt', false)));
+    } else if (field.name === 'video_paths') {
+        row.appendChild(pathButton('Adicionar', async () => {
+            const path = await pickAndUpload(input, 'video/*', false, true);
+            if (!path) return;
+            const current = input.value.trim();
+            input.value = current ? `${current}, ${path}` : path;
+        }));
+    }
+
+    wrapper.appendChild(row);
+    return wrapper;
+}
+
+function pathButton(text, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-small btn-ghost';
+    button.textContent = text;
+    button.addEventListener('click', onClick);
+    return button;
+}
+
+function pickAndUpload(input, accept, makeCurrent, returnOnly = false) {
+    return new Promise((resolve) => {
+        const picker = document.createElement('input');
+        picker.type = 'file';
+        picker.accept = accept;
+        picker.hidden = true;
+        document.body.appendChild(picker);
+
+        picker.addEventListener('change', async () => {
+            const file = picker.files[0];
+            picker.remove();
+            if (!file) {
+                resolve(null);
+                return;
+            }
+            showProgress('Enviando arquivo...');
+            try {
+                const body = new FormData();
+                body.append('file', file);
+                const response = await fetch('/upload', { method: 'POST', body });
+                if (!response.ok) throw new Error(`servidor respondeu ${response.status}`);
+                const data = await response.json();
+                if (makeCurrent) {
+                    currentVideoPath = data.file_path;
+                    currentVideoName = data.name || file.name;
+                    showVideo(URL.createObjectURL(file), currentVideoName);
+                }
+                if (!returnOnly) input.value = data.file_path;
+                resolve(data.file_path);
+            } catch (error) {
+                toast(`Falha no envio: ${error.message}`);
+                resolve(null);
+            } finally {
+                hideProgress();
+            }
+        }, { once: true });
+
+        picker.click();
     });
 }
 
-async function analyzeVideo() {
-    if (!currentVideoPath) return;
-    
-    showProgress('Analisando vídeo...');
-    
-    try {
-        const formData = new FormData();
-        formData.append('file_path', currentVideoPath);
-        
-        const response = await fetch('/analyze', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        displayResults(data.result);
-        addChatMessage('assistant', 'Análise do vídeo concluída!');
-        
-    } catch (error) {
-        addChatMessage('assistant', `Erro: ${error.message}`);
-    } finally {
-        hideProgress();
+async function runSelectedTool(submitButton) {
+    if (!selectedTool) return;
+    const form = $('tool-form');
+    const payload = {};
+    for (const element of form.elements) {
+        if (!element.name) continue;
+        const value = element.value.trim();
+        if (value) payload[element.name] = value;
     }
-}
 
-async function cutVideo() {
-    if (!currentVideoPath) return;
-    
-    const start = document.getElementById('cut-start').value;
-    const end = document.getElementById('cut-end').value;
-    
-    if (!start || !end) {
-        addChatMessage('assistant', 'Por favor, defina o início e o fim do corte na timeline.');
-        return;
-    }
-    
-    showProgress('Cortando vídeo...');
-    
+    submitButton.disabled = true;
+    showProgress(`${selectedTool.label}...`);
+
     try {
-        const formData = new FormData();
-        formData.append('file_path', currentVideoPath);
-        formData.append('start', start);
-        formData.append('end', end);
-        
-        const response = await fetch('/cut', {
+        const response = await fetch(`/tool/${encodeURIComponent(selectedTool.name)}`, {
             method: 'POST',
-            body: formData
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
         });
-        
-        const data = await response.json();
-        addChatMessage('assistant', data.result);
-        
-        if (data.output_path) {
-            showDownloadLink(data.output_path);
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.detail || `servidor respondeu ${response.status}`);
         }
-        
+
+        showToolResult(data);
+        if (data.output_name) scheduleResultsRefresh();
     } catch (error) {
-        addChatMessage('assistant', `Erro: ${error.message}`);
+        showToolResult({ ok: false, result: error.message });
     } finally {
+        submitButton.disabled = false;
         hideProgress();
     }
 }
 
-async function createThumbnail() {
-    if (!currentVideoPath) return;
-    
-    const time = document.getElementById('cut-start').value || '00:00:05';
-    
-    showProgress('Criando thumbnail...');
-    
-    try {
-        const formData = new FormData();
-        formData.append('file_path', currentVideoPath);
-        formData.append('time', time);
-        
-        const response = await fetch('/thumbnail', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        addChatMessage('assistant', data.result);
-        
-        if (data.output_path) {
-            showDownloadLink(data.output_path);
+function showToolResult(data) {
+    const box = $('tool-result');
+    box.hidden = false;
+    box.textContent = '';
+    box.className = `tool-result ${data.ok ? 'ok' : 'error'}`;
+
+    const summary = document.createElement('div');
+    summary.className = 'result-text';
+    summary.textContent = data.result || '(sem resposta)';
+    box.appendChild(summary);
+
+    if (data.output_name) {
+        const actions = document.createElement('div');
+        actions.className = 'result-actions';
+
+        const download = document.createElement('a');
+        download.className = 'btn btn-small btn-primary';
+        download.href = `/download/${encodeURIComponent(data.output_name)}`;
+        download.textContent = 'Baixar';
+        download.setAttribute('download', data.output_name);
+        actions.appendChild(download);
+
+        const isVideo = /\.(mp4|mkv|webm|mov)$/i.test(data.output_name);
+        if (isVideo) {
+            const use = document.createElement('button');
+            use.type = 'button';
+            use.className = 'btn btn-small btn-ghost';
+            use.textContent = 'Usar como vídeo';
+            use.addEventListener('click', () => {
+                useVideoFile(
+                    data.output_path,
+                    `/preview/${encodeURIComponent(data.output_name)}`,
+                    data.output_name,
+                );
+            });
+            actions.appendChild(use);
         }
-        
-    } catch (error) {
-        addChatMessage('assistant', `Erro: ${error.message}`);
-    } finally {
-        hideProgress();
+
+        box.appendChild(actions);
     }
 }
 
-async function optimizeVideo() {
-    if (!currentVideoPath) return;
-    
-    showProgress('Otimizando para YouTube...');
-    
-    try {
-        const formData = new FormData();
-        formData.append('file_path', currentVideoPath);
-        
-        const response = await fetch('/optimize', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        addChatMessage('assistant', data.result);
-        
-        if (data.output_path) {
-            showDownloadLink(data.output_path);
+// ---------------------------------------------------------------- Resultados
+
+function setupButtons() {
+    $('btn-refresh-results').addEventListener('click', () => refreshResults());
+    $('btn-more-results').addEventListener('click', () => {
+        resultsLimit += 12;
+        renderResults();
+    });
+    $('btn-close-form').addEventListener('click', () => {
+        $('tool-form-card').hidden = true;
+        selectedTool = null;
+        document.querySelectorAll('.tool-btn').forEach((btn) => btn.classList.remove('active'));
+    });
+    $('btn-new-chat').addEventListener('click', async () => {
+        try {
+            await fetch('/chat/reset', { method: 'POST' });
+        } catch {
+            /* sem servidor, limpa só a tela */
         }
-        
-    } catch (error) {
-        addChatMessage('assistant', `Erro: ${error.message}`);
-    } finally {
-        hideProgress();
-    }
+        clearChat();
+    });
 }
 
-async function removeSilence() {
-    if (!currentVideoPath) return;
-    
-    showProgress('Removendo silêncio...');
-    
+function scheduleResultsRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => refreshResults({ scroll: true }), 300);
+}
+
+async function refreshResults({ scroll = false } = {}) {
     try {
-        const formData = new FormData();
-        formData.append('file_path', currentVideoPath);
-        
-        const response = await fetch('/remove-silence', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        addChatMessage('assistant', data.result);
-        
-        if (data.output_path) {
-            showDownloadLink(data.output_path);
-        }
-        
-    } catch (error) {
-        addChatMessage('assistant', `Erro: ${error.message}`);
-    } finally {
-        hideProgress();
+        const response = await fetch('/outputs');
+        if (!response.ok) return;
+        allOutputs = await response.json();
+        renderResults({ scroll });
+    } catch {
+        /* servidor indisponível; mantém a galeria atual */
     }
 }
 
-async function extractAudio() {
-    if (!currentVideoPath) return;
-    
-    showProgress('Extraindo áudio...');
-    
-    try {
-        const formData = new FormData();
-        formData.append('file_path', currentVideoPath);
-        
-        const response = await fetch('/extract-audio', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        addChatMessage('assistant', data.result);
-        
-        if (data.output_path) {
-            showDownloadLink(data.output_path);
+function renderResults({ scroll = false } = {}) {
+    const grid = $('results-grid');
+    grid.textContent = '';
+    $('results-empty').hidden = allOutputs.length > 0;
+    $('btn-more-results').hidden = allOutputs.length <= resultsLimit;
+
+    const fresh = [];
+    for (const item of allOutputs) {
+        if (!knownOutputs.has(item.name)) {
+            knownOutputs.add(item.name);
+            if (!resultsFirstLoad) fresh.push(item.name);
         }
-        
-    } catch (error) {
-        addChatMessage('assistant', `Erro: ${error.message}`);
-    } finally {
-        hideProgress();
+    }
+
+    const visible = allOutputs.slice(0, resultsLimit);
+    for (const item of visible) {
+        grid.appendChild(buildResultCard(item, fresh.includes(item.name)));
+    }
+
+    resultsFirstLoad = false;
+
+    if (scroll && fresh.length) {
+        const first = grid.querySelector('.result-item.fresh') || grid.firstElementChild;
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 }
 
-// Chat IA
+function buildResultCard(item, isFresh) {
+    const card = document.createElement('article');
+    card.className = `result-item${isFresh ? ' fresh' : ''}`;
+
+    const media = document.createElement('div');
+    media.className = 'result-media';
+
+    if (item.kind === 'video') {
+        const video = document.createElement('video');
+        video.src = item.url;
+        video.controls = true;
+        video.preload = 'none';
+        video.playsInline = true;
+        media.appendChild(video);
+    } else if (item.kind === 'image' || item.kind === 'gif') {
+        const img = document.createElement('img');
+        img.src = item.url;
+        img.loading = 'lazy';
+        img.alt = item.name;
+        media.appendChild(img);
+    } else if (item.kind === 'audio') {
+        const icon = document.createElement('span');
+        icon.className = 'media-icon';
+        icon.textContent = '🎵';
+        const audio = document.createElement('audio');
+        audio.src = item.url;
+        audio.controls = true;
+        audio.preload = 'metadata';
+        media.append(icon, audio);
+    } else {
+        const icon = document.createElement('span');
+        icon.className = 'media-icon';
+        icon.textContent = '📄';
+        media.appendChild(icon);
+    }
+
+    const info = document.createElement('div');
+    info.className = 'result-info';
+
+    const name = document.createElement('span');
+    name.className = 'result-name';
+    name.textContent = item.name;
+    name.title = item.path || item.name;
+
+    const size = document.createElement('span');
+    size.className = 'result-size';
+    size.textContent = formatSize(item.size);
+
+    info.append(name, size);
+
+    const actions = document.createElement('div');
+    actions.className = 'result-actions';
+
+    const download = document.createElement('a');
+    download.className = 'btn btn-small';
+    download.href = item.download_url;
+    download.textContent = 'Baixar';
+    download.setAttribute('download', item.name);
+    actions.appendChild(download);
+
+    if (item.kind === 'video' && item.path) {
+        const use = document.createElement('button');
+        use.type = 'button';
+        use.className = 'btn btn-small btn-ghost';
+        use.textContent = 'Usar';
+        use.addEventListener('click', () => useVideoFile(item.path, item.url, item.name));
+        actions.appendChild(use);
+    }
+
+    card.append(media, info, actions);
+    return card;
+}
+
+function formatSize(bytes) {
+    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+    if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} B`;
+}
+
+// ---------------------------------------------------------------- Chat
+
+function setupChat() {
+    $('btn-send').addEventListener('click', sendAICommand);
+    $('ai-command').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendAICommand();
+        }
+    });
+    $('agent-status').addEventListener('click', checkAgentStatus);
+}
+
 async function sendAICommand() {
-    const input = document.getElementById('ai-command');
+    const input = $('ai-command');
     const command = input.value.trim();
-
     if (!command) return;
 
     addChatMessage('user', command);
     input.value = '';
     input.disabled = true;
+    $('btn-send').disabled = true;
+    $('chat-state').textContent = 'trabalhando';
     showProgress('IA pensando...');
 
-    try {
-        const formData = new FormData();
-        formData.append('message', command);
+    const body = new FormData();
+    body.append('message', command);
+    if (currentVideoPath) body.append('file_path', currentVideoPath);
+    myTurnId = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    body.append('turn_id', myTurnId);
 
-        const response = await fetch('/chat', { method: 'POST', body: formData });
+    try {
+        const response = await fetch('/chat', { method: 'POST', body });
         const data = await response.json();
-
-        hideProgress();
-        addChatMessage('assistant', data.answer || '(sem resposta)');
-
-        // Um pedido pode ter gerado arquivos novos
-        if (data.answer && data.answer.includes('salvo em:')) refreshResults();
+        addChatMessage(data.error ? 'assistant error' : 'assistant', data.answer || '(sem resposta)');
     } catch (error) {
-        hideProgress();
-        addChatMessage('assistant', `Erro ao falar com a IA: ${error.message}`);
+        addChatMessage('assistant error', `Falha ao falar com a IA: ${error.message}`);
     } finally {
+        myTurnId = null;
         input.disabled = false;
+        $('btn-send').disabled = false;
         input.focus();
-    }
-}
-
-function refreshResults() {
-    document.getElementById('results').style.display = 'block';
-}
-
-// Status da IA no carregamento
-async function checkAgentStatus() {
-    try {
-        const res = await fetch('/agent-status');
-        const status = await res.json();
-        const badge = document.getElementById('agent-status');
-        if (!badge) return;
-
-        if (status.connected && status.has_matching_model) {
-            badge.textContent = `IA conectada · ${status.model}`;
-            badge.className = 'status ok';
-        } else if (status.connected) {
-            badge.textContent = `LM Studio ok, mas modelo "${status.model}" não encontrado`;
-            badge.className = 'status warn';
-        } else {
-            badge.textContent = 'IA desconectada — abra o LM Studio e inicie o servidor';
-            badge.className = 'status fail';
-        }
-    } catch {
-        /* servidor fora do ar; nada a fazer */
+        $('chat-state').textContent = 'pronta';
+        hideProgress();
     }
 }
 
 function addChatMessage(role, text) {
-    const messagesDiv = document.getElementById('chat-messages');
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `chat-message ${role}`;
-    messageDiv.textContent = text;
-    messagesDiv.appendChild(messageDiv);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    const messages = $('chat-messages');
+    const line = document.createElement('div');
+    line.className = `chat-message ${role}`;
+    line.textContent = text;
+    messages.appendChild(line);
+    while (messages.children.length > 200) messages.removeChild(messages.firstElementChild);
+    messages.scrollTop = messages.scrollHeight;
 }
 
-// Resultados
-function displayResults(data) {
-    const resultsDiv = document.getElementById('results');
-    const contentDiv = document.getElementById('results-content');
-    
-    resultsDiv.style.display = 'block';
-    
-    if (typeof data === 'object') {
-        contentDiv.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-        
-        // Mostra info do vídeo
-        if (data.duracao_formato) {
-            document.getElementById('video-info').innerHTML = `
-                <strong>Duração:</strong> ${data.duracao_formato} |
-                <strong>Resolução:</strong> ${data.streams?.[0]?.resolucao || 'N/A'} |
-                <strong>Codec:</strong> ${data.streams?.[0]?.codec || 'N/A'}
-            `;
+function clearChat() {
+    $('chat-messages').textContent = '';
+    $('chat-state').textContent = 'pronta';
+}
+
+async function checkAgentStatus() {
+    const badge = $('agent-status');
+    badge.className = 'status checking';
+    badge.textContent = 'Verificando IA...';
+
+    try {
+        const response = await fetch('/agent-status');
+        const status = await response.json();
+        if (status.connected && status.has_matching_model) {
+            badge.textContent = `IA conectada · ${status.model}`;
+            badge.className = 'status ok';
+            badge.title = status.model;
+        } else if (status.connected) {
+            badge.textContent = 'IA conectada · modelo não encontrado';
+            badge.className = 'status warn';
+            badge.title = status.error || `Modelo: ${status.model}`;
+        } else {
+            badge.textContent = 'IA desconectada';
+            badge.className = 'status fail';
+            badge.title = status.error || 'LM Studio inacessível';
         }
-    } else {
-        contentDiv.innerHTML = `<div class="result-item">${data}</div>`;
+    } catch {
+        badge.textContent = 'Servidor sem resposta';
+        badge.className = 'status fail';
+        badge.title = '';
     }
 }
 
-function showDownloadLink(outputPath) {
-    if (!outputPath) return;
-    
-    const filename = outputPath.split('\\').pop().split('/').pop();
-    const resultsDiv = document.getElementById('results');
-    const contentDiv = document.getElementById('results-content');
-    
-    resultsDiv.style.display = 'block';
-    contentDiv.innerHTML += `
-        <div class="result-item success">
-            <strong>Arquivo gerado:</strong> ${filename}<br>
-            <a href="/download/${filename}" class="btn btn-small" download>Baixar</a>
-        </div>
-    `;
-}
+// ---------------------------------------------------------------- Feedback
 
-// Progress
 function showProgress(text) {
-    document.getElementById('progress-text').textContent = text;
-    document.getElementById('progress').style.display = 'flex';
+    $('progress-text').textContent = text;
+    $('progress').hidden = false;
 }
 
 function hideProgress() {
-    document.getElementById('progress').style.display = 'none';
+    $('progress').hidden = true;
+}
+
+let toastTimer = null;
+function toast(text) {
+    const box = $('toast');
+    box.textContent = text;
+    box.hidden = false;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+        box.hidden = true;
+    }, 3500);
 }

@@ -1,8 +1,8 @@
 # ClipMind
 
-**Editor de vídeo inteligente para YouTube com IA local**
+**Editor de vídeo inteligente com IA local**
 
-ClipMind usa LM Studio com tool calling real para executar comandos FFmpeg automaticamente. Você conversa em português e a IA edita seus vídeos de verdade.
+ClipMind usa LM Studio com tool calling real para executar FFmpeg de verdade. Você conversa em português, a IA escolhe a ferramenta, executa a edição e entrega o arquivo — sem copiar e colar comandos.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
@@ -17,7 +17,7 @@ ClipMind usa LM Studio com tool calling real para executar comandos FFmpeg autom
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Uso](#uso)
-- [Exemplos](#exemplos)
+- [Ferramentas](#ferramentas)
 - [Configuração](#configuração)
 - [Arquitetura](#arquitetura)
 - [Expansão](#expansão)
@@ -28,31 +28,50 @@ ClipMind usa LM Studio com tool calling real para executar comandos FFmpeg autom
 
 ## Sobre
 
-ClipMind transforma comandos de texto em edições reais de vídeo. Diferente de ferramentas que apenas geram comandos para você copiar e colar, o ClipMind **executa as operações diretamente** usando ferramentas reais via LM Studio.
+ClipMind transforma pedidos em edições reais. A IA conversa com você, decide qual ferramenta usar, o SDK executa a função Python correspondente e cada função roda FFmpeg via `subprocess`. O resultado volta para a IA e para a interface em tempo real.
 
-A IA entende seu pedido em português, escolhe a ferramenta apropriada, executa o FFmpeg com os parâmetros corretos e retorna o resultado — tudo automaticamente.
+A mesma camada de IA atende a interface web e o terminal:
+
+- **Web** (`server.py`) — paleta com as 23 ferramentas, formulários gerados a partir do catálogo, preview, timeline, chat em linguagem natural e galeria de resultados.
+- **CLI** (`editor_agent.py`) — o mesmo agente em modo conversa no terminal.
 
 ---
 
 ## Recursos
 
-- **Análise de vídeo** — duração, resolução, codec, FPS, bitrate
-- **Corte preciso** — por tempo inicial/final ou duração
-- **Thumbnails** — extração de frames em alta qualidade
-- **Otimização YouTube** — H.264 + AAC + faststart (padrão YouTube)
-- **Remoção de silêncio** — detecta e remove pausas longas automaticamente
-- **Extração de áudio** — converte para MP3 192kbps
-- **Interface em português** — converse naturalmente com a IA
-- **Tool calling real** — a IA executa ferramentas de verdade, não gera texto
+**Edição**
+- Corte simples, cortes múltiplos em um só arquivo e junção de vídeos
+- Remoção de silêncios com jump cuts (áudio e vídeo permanecem sincronizados)
+- Aceleração/desaceleração, fade, rotação, recorte de área e repetição
+- Texto sobre o vídeo e gravação de legendas `.srt`/`.ass`/`.vtt`
+- Detecção de cenas
+
+**Formato e entrega**
+- Otimização para YouTube (H.264/AAC, faststart)
+- Conversão para MP4, MKV, WebM e MOV
+- Verticalização para Shorts/Reels (fundo desfocado ou corte central)
+- Compressão com tamanho alvo em MB
+- Thumbnail, folha de contatos e GIF
+
+**Áudio**
+- Extração em MP3, WAV ou M4A
+- Normalização de volume para -14 LUFS
+- Música de fundo com volume ajustável
+
+**Experiência**
+- Tool calling real com encadeamento de ferramentas
+- Feedback em tempo real por WebSocket (ferramenta atual, resultado, progresso de carregamento do modelo)
+- Resultados sempre em arquivos novos (numeração `_2`, `_3`, ...), sem sobrescrever edições anteriores
+- Galeria com preview de vídeo, imagem e áudio, download e reutilização como entrada
 
 ---
 
 ## Requisitos
 
 - **Python 3.10+**
-- **FFmpeg** instalado e disponível no PATH
-- **LM Studio** rodando localmente com um modelo carregado
-- **Modelo com suporte a tool calling** (recomendado: Qwen 2.5)
+- **FFmpeg** e **ffprobe** no PATH
+- **LM Studio** com o servidor local iniciado
+- **Modelo com suporte a tool calling** (família Qwen 2.5/3 funciona bem)
 
 ---
 
@@ -60,31 +79,13 @@ A IA entende seu pedido em português, escolhe a ferramenta apropriada, executa 
 
 ### 1. Instalar FFmpeg
 
-FFmpeg é o motor de processamento de vídeo usado pelo ClipMind.
-
 **Windows:**
 
-Opção 1 — Winget (recomendado):
 ```powershell
 winget install FFmpeg
 ```
 
-Opção 2 — Download manual:
-1. Baixe em [https://www.gyan.dev/ffmpeg/builds/](https://www.gyan.dev/ffmpeg/builds/)
-2. Extraia o arquivo ZIP (ex: `C:\ffmpeg`)
-3. Adicione ao PATH do sistema:
-
-```powershell
-# PowerShell como Administrador
-[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\ffmpeg\bin", "User")
-```
-
-4. Reinicie o terminal e verifique:
-
-```bash
-ffmpeg -version
-ffprobe -version
-```
+Ou baixe em [https://www.gyan.dev/ffmpeg/builds/](https://www.gyan.dev/ffmpeg/builds/), extraia e adicione a pasta `bin` ao PATH.
 
 **Linux (Ubuntu/Debian):**
 
@@ -99,21 +100,21 @@ sudo apt install ffmpeg
 brew install ffmpeg
 ```
 
+Confirme:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
 ### 2. Instalar LM Studio
 
-LM Studio é a interface local para rodar modelos de IA.
-
 1. Baixe em [https://lmstudio.ai/](https://lmstudio.ai/)
-2. Instale e abra o LM Studio
-3. Na aba "Discover", busque e baixe um modelo:
-   - **Recomendado:** `qwen2.5-14b-instruct` (melhor tool calling)
-   - **Alternativa leve:** `qwen2.5-7b-instruct` (funciona em máquinas com menos RAM)
-4. Vá para a aba "Local Server" e clique em **Start Server**
-5. O servidor roda em `http://localhost:1234` por padrão
+2. Na aba **Discover**, baixe um modelo com tool calling
+3. Na aba **Developer**, inicie o servidor local
+4. Deixe a autenticação desativada (veja [Autenticação](#autenticação-do-lm-studio-importante))
 
 ### 3. Instalar dependências Python
-
-Clone o repositório e instale as dependências:
 
 ```bash
 git clone https://github.com/DouglasGDev/clipmind.git
@@ -121,193 +122,133 @@ cd clipmind
 pip install -r requirements.txt
 ```
 
-O `requirements.txt` traz o SDK oficial do LM Studio e o servidor web:
-
-```
-lmstudio>=1.5.0
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
-jinja2>=3.1.2
-```
-
 ### 4. Verificar instalação
 
-Teste se tudo está configurado corretamente:
-
 ```bash
-# Verifica FFmpeg
 ffmpeg -version
-
-# Verifica SDK do LM Studio
-python -c "import lmstudio; print('LM Studio SDK OK')"
-
-# Lista modelos baixados e carregados no LM Studio
-lms ls     # baixados
-lms ps     # carregados em memória
-
-# Confere se o ClipMind enxerga a IA (conexão + modelo)
+python -c "import lmstudio; print('SDK OK')"
+lms ps     # modelos carregados
+lms ls     # modelos baixados
 python -c "import asyncio, agent; print(asyncio.run(agent.agent_status()))"
 ```
 
-Se todos os comandos acima funcionarem, você está pronto para usar o ClipMind!
-O último deve retornar `"connected": True`. Se vier `False` com o aviso de API
-token, veja [Autenticação do LM Studio](#autenticação-do-lm-studio-importante).
+O último comando deve retornar `"connected": True`. Se vier `False` com aviso de API token, veja [Autenticação](#autenticação-do-lm-studio-importante).
 
 ---
 
 ## Uso
 
-### Interface Web (Recomendado)
-
-O ClipMind possui uma interface visual moderna e intuitiva:
+### Interface Web
 
 ```bash
 python server.py
 ```
 
-Acesse **http://localhost:8000** no navegador.
+Acesse **http://localhost:8000**.
 
-**Funcionalidades da interface:**
-- Upload de vídeo por drag-and-drop ou seleção de arquivo
-- Preview do vídeo com player integrado
-- Timeline interativa para marcar pontos de corte
-- Botões visuais para todas as ferramentas
-- Chat por texto para comandos em linguagem natural
-- Feedback em tempo real via WebSocket (mostra quando a IA está processando)
-- Download direto dos arquivos processados
+Fluxo típico:
 
-### Interface Terminal (CLI)
+1. Envie um vídeo (arrastar ou **Selecionar vídeo**). O arquivo é copiado para `uploads/` mantendo o nome original.
+2. O cartão **Informações** mostra duração, resolução, FPS, codecs e tamanho.
+3. Use a timeline e os botões **Marcar início** / **Marcar fim** para preencher o corte.
+4. Escolha uma ferramenta na paleta, ajuste os campos e clique em **Executar** — ou peça em português no chat da IA.
+5. O resultado aparece na galeria; use **Usar** para continuar editando a partir dele.
 
-Para usar via linha de comando:
+Os campos de caminho aceitam upload direto: **Escolher** para vídeo, **Enviar** para música ou legenda e **Adicionar** para juntar vários vídeos.
+
+O selo no topo mostra o estado da IA e pode ser clicado para verificar de novo. **Nova conversa** limpa o histórico do agente.
+
+### Interface Terminal
 
 ```bash
 python editor_agent.py
 ```
 
-O programa carrega o modelo configurado e inicia um loop de conversa interativo.
+Comandos: `ajuda`, `status`, `sair`.
 
-### Interface
+### Endpoints da API
+
+| Método | Rota | Função |
+|--------|------|--------|
+| `GET` | `/` | Interface web |
+| `WS` | `/ws` | Eventos em tempo real |
+| `GET` | `/agent-status` | Conexão e modelo do LM Studio |
+| `GET` | `/tools` | Catálogo das 23 ferramentas (com campos) |
+| `POST` | `/tool/{name}` | Executa uma ferramenta com JSON de campos |
+| `POST` | `/upload` | Envia um arquivo e devolve o caminho local |
+| `GET` | `/media-info?path=` | Metadados do vídeo (ffprobe) |
+| `POST` | `/chat` | Turno do agente (`message`, `file_path`, `turn_id`) |
+| `POST` | `/chat/reset` | Descarta o histórico do agente |
+| `GET` | `/outputs` | Lista os arquivos gerados |
+| `GET` | `/preview/{nome}` | Serve um arquivo gerado (com Range) |
+| `GET` | `/download/{nome}` | Baixa um arquivo gerado |
+
+Exemplo de chamada direta:
+
+```bash
+curl -X POST http://localhost:8000/tool/cut_video \
+  -H "Content-Type: application/json" \
+  -d '{"video_path":"C:/Videos/aula.mp4","start":"00:01:30","end":"00:05:00"}'
+```
+
+A resposta traz `ok`, `result`, `output_path` e `output_name`. Erros de validação retornam HTTP 4xx com `detail`.
+
+### Exemplos de comandos para a IA
 
 ```
-============================================================
-  CLIPMIND - Editor de Vídeo Inteligente
-  Powered by LM Studio + FFmpeg
-============================================================
-
-Carregando modelo: qwen2.5-14b-instruct
-Aguarde, isso pode levar alguns segundos...
-
-Modelo 'qwen2.5-14b-instruct' carregado com sucesso!
-
-Estou pronto! Digite sua pergunta ou comando de edição.
-Digite "ajuda" para ver exemplos, "sair" para encerrar.
-
-Você: 
+Analise o vídeo C:/Videos/aula.mp4 e me diga a duração
+Corte o vídeo aula.mp4 de 00:01:30 até 00:05:00
+Remova os silêncios de podcast.mp4 e depois normalize o volume
+Junte intro.mp4 e aula.mp4 em um único vídeo
+Deixe esse vídeo vertical para Shorts com fundo desfocado
+Otimize final.mp4 para o YouTube em 1080p
+Crie uma thumbnail do vlog.mp4 aos 15 segundos
+Extraia o áudio de musica.mp4 em MP3
+Corte os trechos 00:00:05-00:00:12 e 00:02:00-00:02:40 de aula.mp4
+Escreva "Inscreva-se" no rodapé do vídeo
+Grave a legenda legenda.srt no vídeo
 ```
-
-### Comandos disponíveis
-
-| Comando | Ação |
-|---------|------|
-| `ajuda` | Mostra exemplos de uso |
-| `sair` | Encerra o programa |
-| `exit` | Encerra o programa |
-| `quit` | Encerra o programa |
 
 ---
 
-## Exemplos
+## Ferramentas
 
-### Análise de vídeo
+Todas as funções são reais: executam FFmpeg e salvam em `./output/`.
 
-```
-Você: Analise o vídeo C:/Videos/meu_video.mp4
+| Ferramenta | O que faz | Técnica |
+|------------|-----------|---------|
+| `inspect_video` | Metadados completos do vídeo | `ffprobe -show_format -show_streams` |
+| `detect_scenes` | Lista cortes de cena com tempo e score | filtro `scdet` (1–100) |
+| `cut_video` | Extrai um trecho | `-c copy`; re-encode automático se o corte ficar sem imagem |
+| `cut_multiple_segments` | Vários trechos em um só arquivo | `trim`/`atrim` + `concat` |
+| `remove_silence` | Remove pausas | `silencedetect` + jump cuts `trim`/`atrim` + `concat` |
+| `join_videos` | Junta vídeos na ordem | concat demuxer; normalização quando os formatos diferem |
+| `optimize_for_youtube` | Padrão de upload do YouTube | `libx264` CRF 23 + AAC 192k + `faststart`, escala sem distorcer |
+| `resize_for_shorts` | Vertical 1080x1920 | fundo desfocado (`blur`) ou corte central (`crop`) |
+| `compress_video` | Reduz para um tamanho alvo | cálculo de bitrate + 2 passadas |
+| `convert_video` | MP4, MKV, WebM ou MOV | H.264/AAC ou VP9/Opus no WebM |
+| `create_thumbnail` | Capa JPG de um frame | `-vframes 1 -q:v 2` |
+| `create_contact_sheet` | Grade de frames | `tile` (colunas × linhas) |
+| `create_gif` | GIF animado de um trecho | `palettegen` + `paletteuse` |
+| `extract_audio` | Áudio em MP3, WAV ou M4A | `libmp3lame` 192k / PCM / AAC |
+| `normalize_audio` | Loudness de YouTube | `loudnorm I=-14 TP=-1.5:LRA=11` |
+| `add_music` | Música de fundo | `amix` (mantém o original) ou substituição |
+| `change_speed` | 0.25x a 4x | `setpts` + cadeia `atempo` |
+| `fade_video` | Fade de entrada/saída | `fade` (vídeo e áudio) |
+| `rotate_video` | Gira 90°, 180° ou 270° | `transpose`/`rotate` |
+| `crop_video` | Recorta uma área | `crop=largura:altura:x:y` |
+| `loop_video` | Repete o vídeo N vezes | `-stream_loop` |
+| `add_text` | Texto sobre o vídeo | `drawtext` com fonte copiada e `textfile` |
+| `burn_subtitles` | Grava legendas no vídeo | filtro `subtitles` com o `.srt` copiado |
 
-Processando...
-  [Ferramenta] Chamando: inspect_video
-  [Resultado] inspect_video: {"arquivo": "meu_video.mp4", "duracao_segundos": 300.5, ...}
+Saídas são nomeadas a partir do arquivo original (`aula_cortado.mp4`, `aula_youtube.mp4`, `vlog_capa.jpg`). Se o nome já existir, o ClipMind cria `_2`, `_3`, ... — nenhuma edição anterior é sobrescrita.
 
-IA: O vídeo foi analisado com sucesso! Aqui estão as informações:
-- Duração: 5 minutos e 0.5 segundos
-- Resolução: 1920x1080 (Full HD)
-- Codec de vídeo: H.264
-- Codec de áudio: AAC
-- FPS: 30
-- Bitrate total: 2.5 Mbps
-```
+Limites conhecidos:
 
-### Cortar vídeo
-
-```
-Você: Corte o vídeo aula.mp4 do 00:01:30 até 00:05:00
-
-Processando...
-  [Ferramenta] Chamando: cut_video
-  [Resultado] cut_video: Vídeo cortado com sucesso! Arquivo salvo em: E:\clipmind\output\aula_cortado.mp4
-
-IA: Vídeo cortado com sucesso! O segmento de 00:01:30 até 00:05:00 foi extraído.
-Arquivo salvo em: output/aula_cortado.mp4
-```
-
-### Criar thumbnail
-
-```
-Você: Crie uma thumbnail do vídeo vlog.mp4 aos 15 segundos
-
-Processando...
-  [Ferramenta] Chamando: create_thumbnail
-  [Resultado] create_thumbnail: Thumbnail criada com sucesso! Imagem salva em: E:\clipmind\output\vlog_capa.jpg
-
-IA: Thumbnail criada! Frame capturado aos 15 segundos.
-Imagem salva em: output/vlog_capa.jpg (1920x1080, alta qualidade)
-```
-
-### Otimizar para YouTube
-
-```
-Você: Otimize o vídeo final.mp4 para o YouTube em 1080p
-
-Processando...
-  [Ferramenta] Chamando: optimize_for_youtube
-  [Resultado] optimize_for_youtube: Vídeo otimizado para YouTube com sucesso!
-
-IA: Vídeo otimizado para YouTube!
-- Codec: H.264 (libx264)
-- Resolução: 1920x1080
-- Áudio: AAC 192kbps
-- Faststart: ativado (playback antes do download completo)
-Arquivo salvo em: output/final_youtube.mp4
-```
-
-### Remover silêncio
-
-```
-Você: Remova os silêncios do vídeo podcast.mp4
-
-Processando...
-  [Ferramenta] Chamando: remove_silence
-  [Resultado] remove_silence: Silêncios removidos com sucesso!
-
-IA: Silêncios removidos! Pausas maiores que 0.5 segundos foram cortadas.
-Arquivo salvo em: output/podcast_sem_silencio.mp4
-```
-
-### Extrair áudio
-
-```
-Você: Extraia o áudio do vídeo musica.mp4
-
-Processando...
-  [Ferramenta] Chamando: extract_audio
-  [Resultado] extract_audio: Áudio extraído com sucesso!
-
-IA: Áudio extraído em formato MP3!
-- Codec: MP3 (libmp3lame)
-- Bitrate: 192kbps
-- Sample rate: 44100 Hz
-Arquivo salvo em: output/musica_audio.mp3
-```
+- `cut_video` usa stream copy para ser rápido; se o trecho não tiver keyframe, a ferramenta detecta a saída sem imagem e refaz com re-encode.
+- `remove_silence` limita a 300 cortes por vídeo para não gerar um filtro gigante; ajuste o limiar se o áudio tiver muito ruído.
+- `add_text` usa fontes do Windows (Arial/Segoe UI). Em Linux, instale `fonts-dejavu-core` ou ajuste `_font_path`.
+- `burn_subtitles` aceita `.srt`, `.ass` e `.vtt`.
 
 ---
 
@@ -315,30 +256,20 @@ Arquivo salvo em: output/musica_audio.mp3
 
 ### Autenticação do LM Studio (importante)
 
-Por padrão o LM Studio **não** exige autenticação. Se você ativou o switch de
-autenticação em **Developer → Server Settings**, toda chamada (REST, SDK Python,
-SDK TypeScript) passa a exigir um API token.
+Por padrão o LM Studio **não** exige autenticação. Se você ativou o switch de autenticação em **Developer → Server Settings**, toda chamada (REST, SDK Python, SDK TypeScript) passa a exigir um API token.
 
-No SDK Python atual (1.5.0) não há parâmetro para enviar token ao cliente local,
-então conecte-se a um servidor **sem autenticação exigida**:
+No SDK Python 1.5.0 não há parâmetro para enviar token ao cliente local, então conecte-se a um servidor **sem autenticação exigida**:
 
-- LM Studio → aba **Developer** → **Server Settings** → desative o switch de
-  autenticação; e
-- deixe **Network Interface** em `127.0.0.1`, a menos que precise expor na rede
-  (interface `0.0.0.0` expõe seu modelo para qualquer dispositivo da LAN).
+- LM Studio → aba **Developer** → **Server Settings** → desative o switch de autenticação; e
+- deixe **Network Interface** em `127.0.0.1`, a menos que precise expor na rede.
 
-Atenção: trocar a Network Interface para `127.0.0.1` **não** dispensa o token. A
-API interna usada pelo SDK (porta 41343) já é local e mesmo assim recusa a
-conexão enquanto o switch de autenticação estiver ligado. O que libera o SDK é
-desativar a autenticação.
+Atenção: trocar a Network Interface para `127.0.0.1` **não** dispensa o token. A API interna usada pelo SDK (porta 41343) já é local e mesmo assim recusa a conexão enquanto o switch de autenticação estiver ligado. O que libera o SDK é desativar a autenticação.
 
-Sem isso o ClipMind mostra na tela exatamente qual é o bloqueio, em vez de
-falhar silencioso.
+Sem isso o ClipMind mostra na tela exatamente qual é o bloqueio, em vez de falhar silencioso.
 
 ### Modelo usado
 
-Por padrão o ClipMind **detecta o modelo**: usa o que estiver carregado no LM
-Studio; se nenhum estiver, usa o único LLM baixado. Para fixar um modelo:
+Por padrão o ClipMind **detecta o modelo**: usa o que estiver carregado no LM Studio; se nenhum estiver, usa o único LLM baixado. Para fixar um modelo:
 
 **Windows (PowerShell):**
 
@@ -354,43 +285,27 @@ export CLIPMIND_MODEL="qwen/qwen3.8-27b"
 python server.py
 ```
 
-Outras variáveis:
-
 | Variável | Padrão | Uso |
 |----------|--------|-----|
 | `CLIPMIND_MODEL` | auto | nome/chave do modelo no LM Studio |
-| `CLIPMIND_LMS_HOST` | auto-detect | `host:porta` da API local do LM Studio |
+| `CLIPMIND_LMS_HOST` | auto | `host:porta` da API local do LM Studio |
 
-### Trocar a pasta de saída
+### Pasta de saída
 
-Por padrão, os arquivos editados são salvos em `./output/`. Para mudar:
-
-Edite a variável `OUTPUT_DIR` no topo do arquivo `youtube_editor_tools.py`:
+Os arquivos editados vão para `./output/`. Para mudar, edite `OUTPUT_DIR` no topo de `youtube_editor_tools.py`:
 
 ```python
-# Linha 13
 OUTPUT_DIR = Path("./output")
-# OUTPUT_DIR = Path("C:/MeusVideos/Editados")  # Caminho personalizado
+# OUTPUT_DIR = Path("C:/MeusVideos/Editados")
 ```
 
-### Ajustar parâmetros de qualidade
+### Porta do servidor
 
-**Thumbnail (create_thumbnail):**
-- Qualidade JPG: parâmetro `-q:v` (2-31, menor = melhor)
-- Tempo padrão: `00:00:05` (5 segundos)
+`server.py` usa a porta 8000 em `0.0.0.0`. Para expor apenas na máquina local ou trocar a porta:
 
-**Otimização YouTube (optimize_for_youtube):**
-- CRF: parâmetro `-crf` (18-28, menor = melhor qualidade, maior = menor arquivo)
-- Preset: `-preset` (ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow)
-- Bitrate áudio: `-b:a` (128k, 192k, 256k, 320k)
-
-**Remoção de silêncio (remove_silence):**
-- Limiar de ruído: `-30dB` (mais negativo = mais rigoroso)
-- Duração mínima: `0.5` segundos
-
-**Extração de áudio (extract_audio):**
-- Bitrate MP3: `192k` (128k, 192k, 256k, 320k)
-- Sample rate: `44100` Hz
+```python
+uvicorn.run(app, host="127.0.0.1", port=8000)
+```
 
 ---
 
@@ -398,143 +313,76 @@ OUTPUT_DIR = Path("./output")
 
 ```
 clipmind/
-├── youtube_editor_tools.py   # Ferramentas FFmpeg (6 funções)
-├── agent.py                  # Agente LM Studio: .act() + tool calling (usado por web e CLI)
-├── server.py                 # Interface web (FastAPI + WebSocket)
+├── youtube_editor_tools.py   # 23 ferramentas FFmpeg + TOOL_SPECS (catálogo da interface)
+├── agent.py                  # SDK LM Studio: .act() + tool calling (web e CLI)
+├── server.py                 # FastAPI + WebSocket + endpoints das ferramentas
 ├── editor_agent.py           # Interface de terminal (reaproveita agent.py)
 ├── templates/index.html      # Página da interface
 ├── static/style.css          # Estilos
-├── static/app.js             # Lógica da interface (upload, timeline, chat, eventos)
+├── static/app.js             # Paleta, formulários, galeria, timeline e chat
 ├── requirements.txt          # Dependências Python
-├── README.md                 # Este arquivo
-├── LICENSE                   # Licença MIT
-├── .gitignore                # Ignora output/, uploads/, __pycache__/, etc.
-└── output/                   # Gerada automaticamente com os arquivos editados
+├── README.md
+├── LICENSE
+└── output/                   # Gerada automaticamente
 ```
 
 ### Como funciona
 
-1. **Conexão** — `agent.py` abre `AsyncClient` na API local do LM Studio (porta
-   interna 41343) e resolve o modelo (`llm.model()` carrega sob demanda)
-2. **Chat** — mantém um `lms.Chat(SYSTEM_PROMPT)` compartilhado entre pedidos
-3. **Turno** — a interface (ou o CLI) chama `run_agent_turn(texto, on_event)`
-4. **Tool calling** — `llm.act(chat, TOOLS, on_message=...)` roda o loop automático:
-   - LLM analisa o pedido
-   - LLM escolhe a ferramenta apropriada
-   - SDK executa a função Python
-   - Resultado é enviado de volta ao LLM
-   - LLM gera resposta final
-5. **FFmpeg** — Cada ferramenta chama `subprocess.run(["ffmpeg", ...])`
-6. **Output** — Arquivos editados salvos em `./output/` com sufixos (`_cortado`, `_youtube`, etc.)
+1. **Conexão** — `agent.py` abre `AsyncClient` na API local do LM Studio (porta interna 41343) e resolve o modelo (`llm.model()` carrega sob demanda, com progresso reportado à interface).
+2. **Chat** — mantém um `lms.Chat(SYSTEM_PROMPT)` compartilhado entre pedidos; `/chat/reset` descarta o histórico.
+3. **Turno** — a interface chama `run_agent_turn(texto, on_event)`.
+4. **Tool calling** — `llm.act(chat, TOOLS, on_message=...)` roda o loop: o modelo pede a ferramenta, o SDK chama a função Python, o resultado volta ao modelo, e assim por diante.
+5. **Eventos** — cada chamada e resultado é transmitido por WebSocket. `toolCallRequest`/`toolCallResult` do wire format do SDK são traduzidos em eventos simples; a aba que fez o pedido usa o `turn_id` para não duplicar mensagens.
+6. **FFmpeg** — cada ferramenta monta a linha de comando com `subprocess.run`, valida a saída e retorna o caminho absoluto.
+7. **Galeria** — `/outputs` lê `./output`, e `/preview`/`/download` só servem arquivos contidos nessa pasta (sem travessia de diretório).
 
-### Ferramentas implementadas
-
-| Função | Descrição | FFmpeg |
-|--------|-----------|--------|
-| `inspect_video` | Analisa metadados do vídeo | `ffprobe -show_format -show_streams` |
-| `cut_video` | Corta segmento do vídeo | `-ss START -to END -c copy` |
-| `create_thumbnail` | Extrai frame como JPG | `-ss TIME -vframes 1 -q:v 2` |
-| `optimize_for_youtube` | Otimiza para upload YouTube | `-c:v libx264 -crf 23 -c:a aac -movflags +faststart` |
-| `remove_silence` | Remove pausas longas | `-af silenceremove=...` |
-| `extract_audio` | Extrai áudio como MP3 | `-vn -acodec libmp3lame -ab 192k` |
+O painel manual usa o mesmo registro de funções do agente: `/tool/{name}` aceita apenas nomes da whitelist e deriva os parâmetros da assinatura Python.
 
 ---
 
 ## Expansão
 
-Adicionar novas ferramentas é simples. Siga estes passos:
+Para adicionar uma ferramenta:
 
-### 1. Criar a função em `youtube_editor_tools.py`
+1. Escreva a função em `youtube_editor_tools.py` com type hints e docstring (a docstring é o que o modelo lê).
+2. Registre em `TOOL_SPECS` com nome, rótulo, ícone, grupo e campos do formulário.
+3. Importe a função em `agent.py` e adicione em `TOOLS` (a IA passa a usá-la).
+4. Importe em `server.py` e adicione à whitelist `FERRAMENTAS` (o painel passa a executá-la).
+
+Exemplo mínimo:
 
 ```python
-def adicionar_marca_dagua(video_path: str, imagem_path: str, posicao: str = "bottomright") -> str:
+def extract_frame(video_path: str, time: str = "00:00:05") -> str:
     """
-    Adiciona uma marca d'água (imagem) sobre o vídeo.
-    
-    A marca d'água é posicionada em um dos cantos do vídeo.
-    Recomendado usar imagem PNG com transparência.
-    
+    Salva um frame do vídeo como imagem PNG.
+
     Args:
-        video_path: Caminho completo para o vídeo original
-        imagem_path: Caminho completo para a imagem da marca d'água (PNG)
-        posicao: Posição da marca (topleft, topright, bottomleft, bottomright)
-    
+        video_path: caminho do vídeo.
+        time: momento do frame no formato HH:MM:SS.
+
     Returns:
-        str: Mensagem de sucesso com caminho do arquivo, ou mensagem de erro
+        Caminho do arquivo gerado ou mensagem de erro.
     """
-    path = Path(video_path)
-    
-    if not path.exists():
-        return f"Erro: Arquivo não encontrado: {video_path}"
-    
-    output_path = get_output_path(video_path, "_marca_dagua")
-    
-    # Mapeia posição para overlay do FFmpeg
-    overlay_positions = {
-        "topleft": "10:10",
-        "topright": f"main_w-overlay_w-10:10",
-        "bottomleft": f"10:main_h-overlay_h-10",
-        "bottomright": f"main_w-overlay_w-10:main_h-overlay_h-10"
-    }
-    
-    position = overlay_positions.get(posicao, overlay_positions["bottomright"])
-    
-    args = [
-        "-y",
-        "-i", str(path),
-        "-i", imagem_path,
-        "-filter_complex", f"overlay={position}",
-        "-c:a", "copy",
-        str(output_path)
-    ]
-    
-    success, message = run_ffmpeg(args, "Erro ao adicionar marca d'água")
-    
-    if success:
-        return f"Marca d'água adicionada! Arquivo salvo em: {output_path.absolute()}"
-    else:
-        return message
+    erro = _check_file(video_path)
+    if erro:
+        return erro
+    saida = get_output_path(video_path, "_frame", ".png")
+    ok, msg = run_ffmpeg(["-y", "-i", video_path, "-ss", time, "-vframes", "1", str(saida)])
+    return f"Frame salvo em: {saida.absolute()}" if ok else msg
 ```
-
-### 2. Registrar em `agent.py`
-
-Importe e adicione à lista `TOOLS` — é ela que vai para o `.act()`, então web e
-CLI passam a conhecer a ferramenta ao mesmo tempo:
 
 ```python
-from youtube_editor_tools import (
-    inspect_video,
-    cut_video,
-    create_thumbnail,
-    optimize_for_youtube,
-    remove_silence,
-    extract_audio,
-    adicionar_marca_dagua,  # <-- Nova ferramenta
-)
-
-TOOLS = [
-    inspect_video,
-    cut_video,
-    create_thumbnail,
-    optimize_for_youtube,
-    remove_silence,
-    extract_audio,
-    adicionar_marca_dagua,  # <-- Nova ferramenta
-]
+# youtube_editor_tools.py
+TOOL_SPECS.append({
+    "name": "extract_frame", "label": "Extrair frame", "icon": "🖼️", "group": "Entrega",
+    "fields": [
+        {"name": "video_path", "type": "video", "label": "Vídeo"},
+        {"name": "time", "label": "Momento", "default": "00:00:05"},
+    ],
+})
 ```
 
-### 3. Atualizar o system prompt (opcional)
-
-Adicione descrição da nova ferramenta no `SYSTEM_PROMPT` em `agent.py`:
-
-```python
-SYSTEM_PROMPT = """...
-- adicionar_marca_dagua: Adiciona marca d'água sobre o vídeo
-...
-"""
-```
-
-**Dica:** A docstring da função é o que a IA usa para entender quando e como usar a ferramenta. Seja claro e detalhado!
+Adicione `extract_frame` em `TOOLS` (`agent.py`) e em `FERRAMENTAS` (`server.py`). A interface monta o formulário sozinha a partir de `TOOL_SPECS`.
 
 ---
 
@@ -542,123 +390,75 @@ SYSTEM_PROMPT = """...
 
 ### "FFmpeg não encontrado"
 
-**Causa:** FFmpeg não está instalado ou não está no PATH.
+Instale e adicione ao PATH:
 
-**Solução:**
 ```bash
-# Verifica se FFmpeg está instalado
 ffmpeg -version
-
-# Se não estiver, instale (Windows)
-winget install FFmpeg
-
-# Ou baixe em https://www.gyan.dev/ffmpeg/builds/
+winget install FFmpeg   # Windows
 ```
 
-### "Erro ao carregar modelo"
+### "LM Studio não acessível"
 
-**Causa:** LM Studio não está rodando ou modelo não está carregado.
-
-**Solução:**
 1. Abra o LM Studio
-2. Vá para a aba **Developer** e inicie o servidor local
-3. Confira o que existe na máquina:
-
-```bash
-lms ps     # modelos carregados em memória
-lms ls     # modelos baixados
-```
-
-Sem `CLIPMIND_MODEL`, o ClipMind usa o modelo carregado; se nenhum estiver, usa o
-único baixado. Com vários baixados e nenhum carregado, carregue um no LM Studio
-ou defina `CLIPMIND_MODEL`.
+2. Inicie o servidor na aba **Developer**
+3. Confira `lms ps` e `lms ls`
+4. Clique no selo de status da interface para verificar de novo
 
 ### "The LM Studio API token provided was not recognized"
 
-**Causa:** o switch de autenticação está ligado em **Developer → Server Settings**.
-Com ele ligado, toda chamada do SDK precisa de um token — e o SDK Python 1.5.0
-não tem como enviar token ao cliente local.
+O switch de autenticação está ligado em **Developer → Server Settings**. Desative-o e reinicie o servidor. O SDK Python 1.5.0 não consegue enviar token ao cliente local.
 
-**Solução:** desative o switch de autenticação (ou, se precisar de auth, mantenha
-a Network Interface em `127.0.0.1` e acompanhe o suporte a token do SDK).
-
-> Nota: um bug do SDK 1.5.0 faz essa falha chegar como
+> Um bug do SDK 1.5.0 faz essa falha chegar como
 > `ValueError: dictionary update sequence element #0...` em vez do erro de
 > autenticação. O ClipMind reconhece esse texto e mostra o aviso correto.
 
 ### "O modelo não chama as ferramentas"
 
-**Causa:** Modelo não tem bom suporte a tool calling ou comando não está claro.
-
-**Solução:**
-1. Use um modelo com tool calling bom (ex: família Qwen 2.5 / Qwen 3)
-2. Seja específico nos comandos:
-   - Ruim: "edita esse vídeo"
-   - Bom: "Corte o vídeo aula.mp4 do 00:01:00 até 00:03:00"
-3. Confira `GET /agent-status` (ou o selo no topo da interface) para ver se a IA
-   está conectada
+1. Use um modelo com bom suporte a tool calling (Qwen 2.5/3, por exemplo)
+2. Seja específico: "corte aula.mp4 de 00:01:00 até 00:03:00"
+3. Confira o selo de status ou `GET /agent-status`
+4. Se o modelo estiver carregando, a interface mostra o progresso; um modelo grande pode levar minutos na primeira vez
 
 ### "Arquivo não encontrado"
 
-**Causa:** Caminho do vídeo está incorreto.
+Use caminho completo (`C:/Videos/meu_video.mp4`) ou envie o arquivo pela interface. Dentro do app, os caminhos são preenchidos automaticamente.
 
-**Solução:**
-1. Use caminho completo: `C:/Videos/meu_video.mp4` (Windows) ou `/home/user/video.mp4` (Linux/Mac)
-2. Verifique se o arquivo existe
-3. Use barras normais (`/`) ou duplas (`\\`) no Windows
+### Corte saiu sem imagem ou com duração errada
 
-### "Erro ao executar FFmpeg"
+O ClipMind valida o arquivo gerado. Se o stream copy falhar por falta de keyframe, refaz o corte com re-encode automaticamente. Se o problema persistir, verifique o vídeo com `ffprobe` e teste o corte com outro trecho.
 
-**Causa:** Parâmetros inválidos ou arquivo de entrada corrompido.
+### Texto ou legenda não aparecem
 
-**Solução:**
-1. Verifique se o vídeo de entrada é válido: `ffprobe video.mp4`
-2. Teste o comando FFmpeg manualmente para ver o erro completo
-3. Verifique se há espaço em disco suficiente
+`add_text` usa fontes do Windows e `burn_subtitles` usa o filtro `subtitles`. Em Linux, instale `fonts-dejavu-core`. Verifique também se o `.srt` está em UTF-8 e com tempos válidos.
+
+### Porta 8000 ocupada
+
+Encerre o processo que está na porta ou troque a porta em `server.py`:
+
+```bash
+netstat -ano | findstr :8000
+```
 
 ---
 
 ## Licença
 
-Este projeto está licenciado sob a **MIT License** — veja o arquivo [LICENSE](LICENSE) para detalhes.
+MIT — veja [LICENSE](LICENSE).
 
-```
-MIT License
-
-Copyright (c) 2026 Douglas Gonçalves
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software...
-```
+Copyright (c) 2026 Douglas da Silva Groff
 
 ---
 
 ## Contribuindo
 
-Contribuições são bem-vindas! Sinta-se à vontade para:
-
-- Reportar bugs
-- Sugerir novas funcionalidades
-- Enviar pull requests
-- Melhorar a documentação
-
----
+Contribuições são bem-vindas: reporte bugs, sugira ferramentas e envie pull requests.
 
 ## Autor
 
 **Douglas da Silva Groff** — [GitHub](https://github.com/DouglasGDev)
 
----
-
 ## Agradecimentos
 
-- [LM Studio](https://lmstudio.ai/) — Plataforma local para IA
-- [FFmpeg](https://ffmpeg.org/) — Motor de processamento de vídeo
+- [LM Studio](https://lmstudio.ai/) — IA local com tool calling
+- [FFmpeg](https://ffmpeg.org/) — processamento de vídeo
 - Comunidade open-source
-
----
-
-**Divirta-se editando vídeos com IA!**
