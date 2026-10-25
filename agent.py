@@ -158,20 +158,20 @@ def _as_dict(part: Any) -> dict:
     return {}
 
 
-def _text_from_parts(parts: Any) -> str:
-    """Extrai o texto legível de um conteúdo do SDK."""
-    if parts is None:
+# Modelos de raciocínio no LM Studio emitem o pensamento interno dentro do
+# próprio texto, separado da resposta por este marcador. Ele não é conteúdo.
+_REASONING_MARKER = "__LM_STUDIO_INTERNAL_LSEP_SYNTHETIC_REASONING_END_"
+
+
+def _clean_text(text: str) -> str:
+    """Descarta o raciocínio sintético que antecede o marcador interno."""
+    idx = text.find(_REASONING_MARKER)
+    if idx == -1:
+        return text.strip()
+    fim = text.find("__", idx + len(_REASONING_MARKER))
+    if fim == -1:
         return ""
-    if isinstance(parts, str):
-        return parts
-    out: list[str] = []
-    for part in parts:
-        data = _as_dict(part)
-        if data.get("type") == "text":
-            out.append(str(data.get("text", "")))
-        elif isinstance(part, str):
-            out.append(part)
-    return "".join(out).strip()
+    return text[fim + 2:].strip()
 
 
 # O resultado de uma ferramenta chega em mensagem separada,identified only by
@@ -194,8 +194,9 @@ def _describe_message(message: Any) -> list[dict]:
     content = data.get("content", [])
 
     if isinstance(content, str):
-        if content.strip():
-            events.append({"kind": "text", "text": content})
+        text = _clean_text(content)
+        if text:
+            events.append({"kind": "text", "text": text})
         return events
 
     for part in content or []:
@@ -223,7 +224,7 @@ def _describe_message(message: Any) -> list[dict]:
                 "result": str(pdata.get("content", "")),
             })
         elif ptype == "text":
-            text = str(pdata.get("text", "")).strip()
+            text = _clean_text(str(pdata.get("text", "")))
             if text:
                 events.append({"kind": "text", "text": text})
 
@@ -331,14 +332,23 @@ async def run_agent_turn(
 
     try:
         pendentes: list[asyncio.Future] = []
+        resposta_final = ""
+
+        async def capturar(event: dict) -> None:
+            nonlocal resposta_final
+            if event.get("kind") == "text":
+                resposta_final = event["text"]
+            await on_event(event)
 
         async with AsyncClient(**_client_kwargs()) as client:
-            llm = await _resolve_llm(client, on_event, pendentes)
+            llm = await _resolve_llm(client, capturar, pendentes)
 
-            result = await llm.act(
+            # O SDK 1.5.0 expõe ActResult.rounds apenas como contagem; a
+            # resposta final chega pelo callback, no último texto do assistente.
+            await llm.act(
                 _chat,
                 TOOLS,
-                on_message=lambda message: _forward(message, on_event, pendentes),
+                on_message=lambda message: _forward(message, capturar, pendentes),
             )
 
             # Drena os eventos agendados para a resposta final não chegar na
@@ -346,17 +356,11 @@ async def run_agent_turn(
             if pendentes:
                 await asyncio.gather(*pendentes)
 
-            final_text = ""
-            for round_result in reversed(list(result.rounds)):
-                final_text = _text_from_parts(round_result.content)
-                if final_text:
-                    break
+            if not resposta_final:
+                resposta_final = "A IA terminou sem texto de resposta."
 
-            if not final_text:
-                final_text = "A IA terminou sem texto de resposta."
-
-            await on_event({"kind": "answer", "text": final_text})
-            return final_text
+            await on_event({"kind": "answer", "text": resposta_final})
+            return resposta_final
 
     except AgentError:
         raise
