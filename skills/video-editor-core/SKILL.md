@@ -3,7 +3,7 @@ name: video-editor-core
 title: Núcleo do Editor de Vídeo
 description: Modelo mental de projeto, faixas e ordem segura de operações na timeline do ClipMind.
 triggers: timeline, projeto de edição, faixas, organização, validar timeline, renderizar, prévia, marcadores
-tools: create_edit_project, inspect_edit_project, configure_edit_project, add_timeline_clip, add_timeline_text, add_timeline_subtitles, validate_timeline, render_timeline, check_render_job, add_timeline_marker, list_editor_skills, load_editor_skill
+tools: create_edit_project, inspect_edit_project, configure_edit_project, add_timeline_clip, add_timeline_text, add_timeline_subtitles, validate_timeline, render_timeline, check_render_job, add_timeline_marker, analyze_timeline_clip, clear_timeline_annotations, list_editor_skills, load_editor_skill
 ---
 
 ## 1. Objetivo
@@ -17,9 +17,11 @@ Operar a timeline não destrutiva do ClipMind, que guarda referências e parâme
 ## 3. Diagnóstico antes de editar
 1. Chame `inspect_edit_project` e leia duração, faixas, ids, tempos e avisos.
 2. Rode `validate_timeline`: erro impede render; aviso exige revisão.
-3. Confirme os arquivos citados pelo usuário; nunca invente caminhos, clipes ou ids.
-4. Trabalhe em `HH:MM:SS.mmm`; as ferramentas recebem segundos, não frames.
-5. Localize a faixa (v1 base, v2 sobreposição, t1 títulos, s1 legendas, a1 áudio) e evite colisão na mesma faixa; entre faixas é permitido.
+3. Se o pedido depender do conteúdo, meça clipe por clipe com `analyze_timeline_clip`: `kind="silence"` para pausas, `kind="scenes"` para trocas de cena, `kind="loudness"` para LUFS/LRA/true peak. Cite os tempos medidos; não estime de cabeça.
+4. Só grave candidatos (`apply_candidates=true`) depois de dizer o que a medição achou, avisando que candidato não é corte. Para limpar a sugestão, `clear_timeline_annotations`.
+5. Confirme os arquivos citados pelo usuário; nunca invente caminhos, clipes ou ids.
+6. Trabalhe em `HH:MM:SS.mmm`; as ferramentas recebem segundos, não frames.
+7. Localize a faixa (v1 base, v2 sobreposição, t1 títulos, s1 legendas, a1 áudio) e evite colisão na mesma faixa; entre faixas é permitido.
 
 ## 4. Procedimento
 1. Carregue esta skill e a específica com `load_editor_skill`.
@@ -65,9 +67,19 @@ Operar a timeline não destrutiva do ClipMind, que guarda referências e parâme
 - Sem preto ≥0,5 s não intencional; loudness > -60 LUFS; true peak ≤ -0,1 dBFS; delta A/V ≤ 0,15 s.
 
 ## 9. Limitações atuais do ClipMind
-Não há prévia em tempo real: é um render leve de 360p. Não existem transcrição, detecção de silêncio, keyframes/curvas, rastreamento, multicam, LUTs, EQ/compressor/denoiser, waveform, B-roll automático nem capítulos. Faixas: v1, v2, t1, s1, a1. O humano fornece timecodes/arquivos ou usa editor externo.
+**O que `analyze_timeline_clip` mede** (FFmpeg em um clipe da timeline por vez):
+- `kind="scenes"` (`scdet`): tempos de troca de cena com score 1–100; `threshold` menor acha mais. Cada candidato vem com o tempo da timeline e o tempo do arquivo.
+- `kind="silence"` (`silencedetect`): intervalos de pausa (início/fim) em tempo de timeline; `noise` em dB (ex. -30) e `min_pause` em segundos.
+- `kind="loudness"` (`ebur128`): três números agregados da janela do clipe — LUFS integrado, LRA em LU e true peak em dBFS. Não existe curva de pico por momento nem waveform.
+
+A medição não corta nada. `apply_candidates=true` grava as cenas como marcadores (grupo `cenas`) e as pausas como regiões (grupo `pausas`) num único passo de undo: itens feitos à mão ficam, duplicados são pulados e mais de 400 candidatos são rejeitados. `loudness` não grava nada. O humano vê os candidatos na faixa da timeline e no painel "Análise" do inspetor e aplica ou limpa (`clear_timeline_annotations(group="cenas")` remove só o grupo escrito pela análise).
+
+**O que não existe**: transcrição, texto de fala, timestamps por palavra, identificação de vozes; waveform, curva de pico por momento, detecção automática de highlights; rastreamento de rosto/objeto/curso, reframe automático, sincronia multicam, busca ou download de B-roll (o humano fornece o material licenciado); filtros de áudio (EQ, HPF/LPF, denoiser, compressor, de-esser, ducking por sidechain, automação de volume) — só `afade` e `volume` 0–4 por clipe, nada normaliza loudness; LUT, curvas, balanço de branco/temperatura/tinta, scopes/vectorscope/histograma ou algoritmo de shot-matching (igualar planos é comparar e ajustar); análise do conteúdo da imagem (não lê brilho/exposição do quadro); keyframes, rampa de velocidade (0,1–8 é constante), transição que não seja fade, prévia em tempo real (é render 360p), capítulos. Faixas: v1, v2, t1, s1, a1.
+
+A análise só propõe. Cada edição continua nos ops existentes — `trim_timeline_clip`, `split_timeline_clip`, `move_timeline_clip`, `delete_timeline_clip`, `set_timeline_clip` — depois do aval humano.
 
 ## 10. Ferramentas e skills relacionadas
 - Projeto/conteúdo: `create_edit_project`, `inspect_edit_project`, `add_timeline_clip`, `add_timeline_text`, `add_timeline_subtitles`.
 - Edição/entrega: `trim_timeline_clip`, `split_timeline_clip`, `fine_timeline_edit`, `set_timeline_clip`, `validate_timeline`, `render_timeline`, `check_render_job`.
+- Medição/anotação: `analyze_timeline_clip`, `clear_timeline_annotations`, `add_timeline_marker`.
 - Skills: `professional-cutting`, `storytelling-and-pacing`, `transitions-and-keyframes`, `b-roll-planning`.

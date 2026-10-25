@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+import editor_analysis
 import editor_skills
 import timeline_agent
 from agent import agent_status
@@ -263,6 +264,66 @@ async def validate(project_id: str):
         raise _handle(e)
     issues = validate_project(projeto)
     return {"issues": issues, "ok": not has_errors(issues)}
+
+
+@router.post("/api/editor/projects/{project_id}/analyze")
+async def analyze(project_id: str, request: Request):
+    """
+    Mede o conteúdo de um clipe com FFmpeg e devolve candidatos.
+
+    A medição roda em thread: ler dez minutos de áudio com silencedetect é lento
+    demais para deixar no event loop, que serve o WebSocket da interface. Com
+    `apply=true` os candidatos viram marcadores/regiões num passo só de undo; o
+    corte em si continua sendo decisão de quem edita.
+    """
+    body = await _corpo(request)
+    try:
+        projeto = STORE.get(project_id)
+    except ProjectError as e:
+        raise _handle(e)
+
+    try:
+        analise = await asyncio.to_thread(
+            editor_analysis.analyze_clip,
+            projeto,
+            str(body.get("clip_id") or ""),
+            str(body.get("kind") or "scenes"),
+            threshold=float(body.get("threshold", 15)),
+            noise=float(body.get("noise", -30)),
+            min_pause=float(body.get("min_pause", 0.5)),
+        )
+    except (ProjectError, TypeError, ValueError) as e:
+        raise _handle(e if isinstance(e, ProjectError) else ProjectError(str(e)))
+
+    resposta: dict = {"analysis": analise, "project": project_view(projeto)}
+    if not body.get("apply"):
+        return resposta
+
+    anotacao = editor_analysis.build_annotations(analise)
+    if not (anotacao["markers"] or anotacao["regions"]):
+        raise HTTPException(status_code=400, detail="Essa análise não tem candidato para gravar")
+    try:
+        atualizado = STORE.apply(project_id, "annotate", {
+            "group": anotacao["group"],
+            "markers": anotacao["markers"],
+            "regions": anotacao["regions"],
+        })
+    except ProjectError as e:
+        raise _handle(e)
+    # O que se conta aqui é o projeto depois da escrita, não o que se pediu: se
+    # o motor deduplicou um tempo, a interface mostra o que de fato está na timeline.
+    resposta["annotations"] = {
+        "group": anotacao["group"],
+        "markers": sum(1 for m in atualizado.get("markers", []) if m.get("group") == anotacao["group"]),
+        "regions": sum(1 for r in atualizado.get("regions", []) if r.get("group") == anotacao["group"]),
+    }
+    resposta["project"] = project_view(atualizado)
+    await _emit({
+        "type": "editor_project_changed",
+        "project_id": project_id,
+        "operation": "annotate",
+    })
+    return resposta
 
 
 @router.post("/api/editor/projects/{project_id}/render")

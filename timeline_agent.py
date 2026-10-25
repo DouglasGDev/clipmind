@@ -20,6 +20,7 @@ from typing import Optional
 import lmstudio as lms
 from lmstudio import AsyncClient, Chat
 
+import editor_analysis
 import editor_skills
 from agent import (
     _client_kwargs,
@@ -34,7 +35,9 @@ from editor_project import (
     add_marker,
     add_subtitle_clip,
     add_text_clip,
+    annotate,
     apply_operation,
+    clear_annotations,
     delete_clip,
     duplicate_clip,
     format_timecode,
@@ -502,6 +505,98 @@ def add_timeline_marker(project_id: str = "", time: float = 0, label: str = "") 
 
 
 # ---------------------------------------------------------------------------
+# Análise de conteúdo
+# ---------------------------------------------------------------------------
+
+def analyze_timeline_clip(
+    project_id: str = "",
+    clip_id: str = "",
+    kind: str = "scenes",
+    threshold: float = 15,
+    noise: float = -30,
+    min_pause: float = 0.5,
+    apply_candidates: bool = False,
+) -> str:
+    """
+    Mede o conteúdo real de um clipe com FFmpeg e devolve candidatos em tempo de timeline.
+
+    kind="scenes" acha trocas de cena (scdet, com score de 1 a 100; menor acha
+    mais). kind="silence" acha pausas (silencedetect; noise em dB, min_pause em
+    segundos). kind="loudness" mede LUFS integrado, LRA e true peak do clipe —
+    use ANTES de mexer em volume, para diagnosticar em vez de chutar.
+
+    A análise não corta nada. Sem apply_candidates, você só recebe os tempos. Com
+    apply_candidates=True, cenas viram marcadores e pausas viram regiões na
+    timeline, num único passo de undo, para revisão. Regiões e marcadores criados
+    à mão não são tocados.
+    """
+    try:
+        projeto = _project(project_id)
+        analise = editor_analysis.analyze_clip(
+            projeto,
+            clip_id,
+            kind,
+            threshold=threshold,
+            noise=noise,
+            min_pause=min_pause,
+        )
+    except ProjectError as e:
+        return _fail(str(e))
+
+    dados: dict = {
+        "ok": True,
+        "kind": analise["kind"],
+        "grupo": analise["group"],
+        "clip_id": analise["clip_id"],
+        "janela": analise["window"],
+        "mensagem": analise["summary"],
+        "candidatos": analise["candidates"][:40],
+        "total_candidatos": len(analise["candidates"]),
+    }
+    if analise["kind"] == "loudness":
+        dados["medicoes"] = analise["measurements"]
+        dados["candidatos"] = []
+
+    if apply_candidates:
+        anotacao = editor_analysis.build_annotations(analise)
+        if not (anotacao["markers"] or anotacao["regions"]):
+            dados["anotacao"] = None
+            dados["aviso"] = (
+                "Nada para gravar: loudness é só medida, e as outras análises não "
+                "trouxeram candidato."
+            )
+        else:
+            try:
+                with _editing(project_id, f"Anotar {anotacao['group']}") as vivo:
+                    resultado = annotate(
+                        vivo,
+                        group=anotacao["group"],
+                        markers=anotacao["markers"],
+                        regions=anotacao["regions"],
+                    )
+                dados["anotacao"] = resultado
+            except ProjectError as e:
+                return _fail(str(e))
+    return json.dumps(dados, ensure_ascii=False)
+
+
+def clear_timeline_annotations(project_id: str = "", group: str = "") -> str:
+    """
+    Remove os candidatos que uma análise gravou (group "cenas" ou "pausas").
+
+    Use antes de reanalisar com parâmetros diferentes ou quando o editor decidiu
+    que a sugestão não serve. Marcadores e regiões criados à mão ficam na timeline.
+    """
+    try:
+        with _editing(project_id, "Limpar anotações") as vivo:
+            removido = clear_annotations(vivo, group)
+        return _ok(vivo, f"Removidos {removido['markers']} marcadores e {removido['regions']} regiões de '{group}'.",
+                   removido=removido)
+    except ProjectError as e:
+        return _fail(str(e))
+
+
+# ---------------------------------------------------------------------------
 # Validação e render
 # ---------------------------------------------------------------------------
 
@@ -641,6 +736,8 @@ TOOLS = [
     fine_timeline_edit,
     set_timeline_clip,
     add_timeline_marker,
+    analyze_timeline_clip,
+    clear_timeline_annotations,
     validate_timeline,
     render_timeline,
     check_render_job,
@@ -655,15 +752,20 @@ def _system_prompt() -> str:
 
 Fluxo obrigatório:
 1. Antes de editar, chame inspect_edit_project uma vez para ver faixas, ids e tempos reais.
-2. Carregue uma skill com load_editor_skill quando o pedido envolver método (corte, ritmo,
+2. Se o pedido depender do conteúdo (pausas, cortes de cena, volume alto ou baixo),
+   meça antes de propor qualquer corte: analyze_timeline_clip com kind="silence",
+   "scenes" ou "loudness". Os números vêm da medição; nunca estime de cabeça.
+   A medição não altera o projeto. Só grave candidatos (apply_candidates=true)
+   depois de dizer o que encontrou, e avise que candidato não é corte.
+3. Carregue uma skill com load_editor_skill quando o pedido envolver método (corte, ritmo,
    áudio, legendas, shorts, cor, exportação, diagnóstico). Para operação pontual simples,
    edite direto sem carregar skill.
-3. Trabalhe em operações pequenas e confirme cada resultado pela resposta da ferramenta.
-4. Use validate_timeline depois de mudanças estruturais (cortes, moves, splits, exclusões).
-5. Antes de entregar uma edição concluída, renderize uma prévia com render_timeline(preview=true)
+4. Trabalhe em operações pequenas e confirme cada resultado pela resposta da ferramenta.
+5. Use validate_timeline depois de mudanças estruturais (cortes, moves, splits, exclusões).
+6. Antes de entregar uma edição concluída, renderize uma prévia com render_timeline(preview=true)
    e acompanhe com check_render_job. Não repita a prévia a cada ajuste pequeno.
-6. Só exporte (preview=false) quando a prévia e o QC estiverem corretos.
-7. Exclusões exigem aval explícito do usuário; chame delete_timeline_clip com confirm=true apenas depois disso.
+7. Só exporte (preview=false) quando a prévia e o QC estiverem corretos.
+8. Exclusões exigem aval explícito do usuário; chame delete_timeline_clip com confirm=true apenas depois disso.
 
 Regras:
 - Nunca invente clipes, ids, caminhos ou números. Use o resultado das ferramentas.

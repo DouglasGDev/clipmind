@@ -3,7 +3,7 @@ name: color-grading
 title: Color grading e look
 description: Cria um look criativo com eq, mantém consistência entre planos e preserva a faixa legal sem LUT.
 triggers: color grading, grading, look, estilo de cor, tonalidade, saturação criativa, contraste, gamma, consistência de cor, visual
-tools: inspect_edit_project, add_timeline_clip, set_timeline_clip, add_timeline_marker, validate_timeline, render_timeline, check_render_job, list_editor_skills, load_editor_skill
+tools: inspect_edit_project, add_timeline_clip, set_timeline_clip, add_timeline_marker, analyze_timeline_clip, clear_timeline_annotations, validate_timeline, render_timeline, check_render_job, list_editor_skills, load_editor_skill
 ---
 
 ## 1. Objetivo
@@ -16,16 +16,18 @@ Não use para corrigir exposição/dominante nem espere LUT, curvas ou split ton
 
 ## 3. Diagnóstico antes de editar
 1. `inspect_edit_project`: confirme os valores existentes e se a correção já foi aplicada. Não empilhe grading sobre dominante.
-2. Gere prévia e avalie contraste, saturação, pele, pretos, altas luzes e planos com luz diferente.
-3. Escolha um plano herói e separe os planos por cena/luz; o look é decidido por cena, não por clipe isolado.
-4. Cheque a faixa legal (8 bits: 16–235) e a pele. Sem scopes, o julgamento é visual e conservador.
+2. `analyze_timeline_clip(kind="scenes")` nos clipes da sequência: `scdet` mede onde cada plano termina e devolve o tempo da timeline e o do arquivo (score 1–100; `threshold` menor acha mais). São essas fronteiras que delimitam os segmentos de look.
+3. `apply_candidates=true` grava os cortes como marcadores `cenas`, num único undo e sem tocar nos feitos à mão; `clear_timeline_annotations(group="cenas")` os remove. A medição propõe e não mede a imagem.
+4. Gere prévia e avalie contraste, saturação, pele, pretos, altas luzes e planos com luz diferente.
+5. Escolha um plano herói e agrupe os planos por segmento medido/luz; o look é decidido por cena, não por clipe isolado.
+6. Cheque a faixa legal (8 bits: 16–235) e a pele. Sem scopes, o julgamento é visual e conservador.
 
 ## 4. Procedimento
 1. Marque o herói ("look ref") e gere a prévia de referência.
 2. Defina o look em palavras e traduza para números: contraste 1,05–1,25, saturação 0,85–1,2, gamma 0,95–1,08.
 3. Aplique no herói com `set_timeline_clip`: um campo por vez, passos de 0,02–0,05.
 4. Use `contrast` para pretos/brancos, `gamma` para médios e `saturation` para intensidade. `brightness` só compensa ±0,03.
-5. Copie os valores para a mesma cena e ajuste só ±0,02 para diferenças de exposição. Não invente um look por clipe.
+5. Copie os valores para o mesmo segmento entre duas fronteiras medidas e ajuste só ±0,02 para diferenças de exposição. Se um clipe cobre dois planos, divida na fronteira medida (`split_timeline_clip`) só com aval. Não invente um look por clipe.
 6. Confira pele, pretos e altas luzes no corte; saturação acima de 1,2 deve ser reduzida. Renderize, valide, exporte e registre em marcador.
 
 ## 5. Critérios e parâmetros
@@ -65,12 +67,15 @@ Looks discretos de `eq`, não emulação. Mantenha 16–235 e a mesma receita na
 5. Compare prévia e arquivo final; peça revisão humana e exporte só após aprovar a prévia.
 
 ## 9. Limitações atuais do ClipMind
-- Não há LUT (`.cube`), curvas, color wheels, HSL, máscaras ou correção secundária; o look é global por clipe (brilho, contraste, saturação, gamma).
+- `analyze_timeline_clip(kind="scenes")` mede as fronteiras que delimitam os segmentos de look (tempo da timeline e do arquivo, com score); `kind="silence"` mede pausas e `kind="loudness"` dá LUFS/LRA/true peak agregados do clipe. Nada disso lê a imagem nem aplica look: a medição só propõe. `apply_candidates=true` grava `cenas`/`pausas` para revisão, `clear_timeline_annotations` limpa, e o humano decide.
+- Não há LUT (`.cube`), curvas, color wheels, HSL, máscaras ou correção secundária; o look é global por clipe (brilho, contraste, saturação, gamma) e não muda dentro do clipe.
 - Sem temperatura, tinta, split tone ou matiz; teal-and-orange e emulação não são possíveis.
-- Não há scopes, gestão de cor, HDR, grão, halation ou keyframes.
-- LUT/curvas exigiriam `lut3d`/`curves` em FFmpeg e mudança de código; processar fora não atualiza o projeto.
+- Não há scopes, vectorscope, histograma, medição de cor/exposição do quadro, gestão de cor, HDR, grão, halation nem keyframes: o look é julgado na prévia, não em números.
+- Não há igualamento automático de planos nem harmonização de sequência: a continuidade entre segmentos é comparada visualmente e corrigida valor a valor.
+- LUT/curvas e look animado exigiriam `lut3d`/`curves`/keyframes em FFmpeg e mudança de código; processar fora não atualiza o projeto.
 
 ## 10. Ferramentas e skills relacionadas
 - Ajuste: `inspect_edit_project`, `set_timeline_clip`, `add_timeline_marker`.
+- Medição: `analyze_timeline_clip`, `clear_timeline_annotations`.
 - Validação e entrega: `validate_timeline`, `render_timeline`, `check_render_job`.
 - Catálogo e afins: `list_editor_skills`, `load_editor_skill`; `color-correction` (antes), `motion-graphics`, `subtitles-and-captions`.

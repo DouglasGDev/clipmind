@@ -16,6 +16,7 @@ os.environ["CLIPMIND_PROJECTS"] = str(_TMP_ROOT / "projects")
 import pytest  # noqa: E402
 
 import editor_render  # noqa: E402
+import timeline_agent  # noqa: E402
 from editor_project import ProjectStore  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -32,6 +33,22 @@ requires_media = pytest.mark.skipif(not _tem_media(), reason="mídia de teste au
 @pytest.fixture
 def store(tmp_path) -> ProjectStore:
     return ProjectStore(root=tmp_path / "projects")
+
+
+@pytest.fixture
+def loja(tmp_path, monkeypatch) -> ProjectStore:
+    """
+    Loja isolada para as ferramentas do agente.
+
+    Troca o STORE singleton do módulo e derruba a conversa entre testes: o que o
+    modelo combinou num teste não pode aparecer no outro. Fica aqui porque o
+    contrato das ferramentas é exercitado em mais de um arquivo de teste.
+    """
+    nova = ProjectStore(root=tmp_path / "projetos")
+    monkeypatch.setattr(timeline_agent, "STORE", nova)
+    timeline_agent.reset_chat()
+    yield nova
+    timeline_agent.reset_chat()
 
 
 @pytest.fixture

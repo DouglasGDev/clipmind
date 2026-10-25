@@ -3,7 +3,7 @@ name: short-form-vertical
 title: Vídeos curtos verticais
 description: Fluxo 9:16 para Shorts, Reels e TikTok com gancho, ritmo, legendas e enquadramento manual sem auto-reframe.
 triggers: shorts, reels, tiktok, vertical, 9:16, 1080x1920, vídeo curto, hook, legendas
-tools: create_edit_project, inspect_edit_project, configure_edit_project, add_timeline_clip, add_timeline_text, add_timeline_subtitles, trim_timeline_clip, split_timeline_clip, delete_timeline_clip, set_timeline_clip, add_timeline_marker, validate_timeline, render_timeline, check_render_job
+tools: create_edit_project, inspect_edit_project, configure_edit_project, add_timeline_clip, add_timeline_text, add_timeline_subtitles, trim_timeline_clip, split_timeline_clip, delete_timeline_clip, set_timeline_clip, add_timeline_marker, validate_timeline, render_timeline, check_render_job, analyze_timeline_clip, clear_timeline_annotations
 ---
 
 ## 1. Objetivo
@@ -19,14 +19,17 @@ Produzir vídeo vertical de 15–60 s com gancho nos primeiros 1–2 s, ritmo de
 2. `validate_timeline`: erro bloqueia o render; aviso precisa ser corrigido.
 3. Confirme a proporção da fonte; o resumo não mostra a resolução.
 4. Escolha por plano: letterbox, corte com `transform_scale` ou reedição.
-5. Defina gancho (1–2 s), payoff e duração final.
+5. Meça o ritmo antes de escolher os cortes: `analyze_timeline_clip(kind="scenes", threshold=20)` por clipe devolve cada troca de plano com score e com o tempo de timeline e o de arquivo; é a grade onde os cortes de 1,5–3 s se apoiam.
+6. `analyze_timeline_clip(kind="silence", noise=-35, min_pause=0.25)` traz início e fim das respirações curtas — em 9:16 é o que mais custa retenção. `kind="loudness"` dá LUFS integrado, LRA e true peak da janela antes do `volume`.
+7. Revise os candidatos com o humano e só então corte; a análise não corta sozinha.
+8. Defina gancho (1–2 s), payoff e duração final.
 
 ## 4. Procedimento
 1. `create_edit_project(1080, 1920, fps=30)`; 60 fps só com fonte 60.
 2. `add_timeline_clip(track="v1")`. Fonte 16:9 entra em 1080x608, com barras de ~656 px.
 3. Para preencher, `set_timeline_clip(transform_scale=3.16)` cobre 1080x1920 e mostra ~31% da largura; ajuste `transform_x` em ±1.100 px e confira plano a plano.
 4. Gancho na ação ou rosto; sem fade >0,2 s nos primeiros 2 s.
-5. Duração 15–60 s (ideal 20–45). `split_timeline_clip` e `delete_timeline_clip(confirm=true, ripple=true)`; 1,5–3 s por plano, 6–12 cortes em 30 s.
+5. Duração 15–60 s (ideal 20–45). Grave a sugestão: `analyze_timeline_clip(kind="scenes", threshold=20, apply_candidates=true)` escreve as trocas de plano como marcadores `cenas`; `analyze_timeline_clip(kind="silence", noise=-35, min_pause=0.25, apply_candidates=true)`, as pausas como regiões `pausas`. Revise na régua e no inspetor e corte nesses tempos com `trim_timeline_clip`/`split_timeline_clip` + `delete_timeline_clip(confirm=true, ripple=true)`. Para reanalisar com outros parâmetros, `clear_timeline_annotations` primeiro. 1,5–3 s por plano, 6–12 cortes em 30 s.
 6. Legendas `s1`: `.srt` manual, 9–11, `margin_v=55–65`, 2 linhas e 3–6 palavras; 10 ≈ 67 px e 60 ≈ 400 px.
 7. Títulos `t1`: 64–88 px, 2 linhas, `topo`/`centro`, fundo; posições fixas.
 8. Valide, prévia, `done`, exporte `preview=false`, CRF 20–22 (18–20 em movimento).
@@ -64,9 +67,10 @@ Produzir vídeo vertical de 15–60 s com gancho nos primeiros 1–2 s, ritmo de
 6. Entrega local, sem upload nem preset.
 
 ## 9. Limitações atuais do ClipMind
-Não há auto-reframe, tracking, corte automático, transcrição nem legendas automáticas. O enquadramento é manual, com escala/deslocamento fixos por clipe. Sem keyframes, curvas de velocidade, fundo desfocado, LUTs ou presets; a prévia é 360p e não há upload. Alternativas: cortar por plano com `transform_scale`/`transform_x`, aceitar letterbox planejado ou reeditar em 9:16; escreva as legendas fora e importe `.srt`.
+`analyze_timeline_clip` mede um clipe e devolve candidato: `kind="scenes"` (scdet) traz as trocas de plano com score e com o tempo de timeline e o de arquivo; `kind="silence"` (silencedetect) traz início e fim de cada pausa conforme `noise` em dB e `min_pause` em s; `kind="loudness"` (ebur128) traz LUFS integrado, LRA e true peak daquela janela — sem curva de áudio por instante e sem forma de onda. Nada corta sozinho: `apply_candidates=true` grava marcadores `cenas` e regiões `pausas` num passo de undo, `clear_timeline_annotations` os remove, e o corte é `trim_timeline_clip`/`split_timeline_clip`/`delete_timeline_clip` depois do aval do humano. Não há auto-reframe, rastreamento de rosto ou de assunto, transcrição nem legenda automática — a troca de cena medida não diz onde está o rosto. O enquadramento é manual, com escala/deslocamento fixos por clipe. Sem keyframes, curvas de velocidade, fundo desfocado, LUTs ou presets; a prévia é 360p e não há upload. Alternativas: cortar por plano com `transform_scale`/`transform_x`, aceitar letterbox planejado ou reeditar em 9:16; escreva as legendas fora e importe `.srt`.
 
 ## 10. Ferramentas e skills relacionadas
 - Projeto/montagem: `create_edit_project`, `inspect_edit_project`, `add_timeline_clip`, `split_timeline_clip`, `delete_timeline_clip`, `set_timeline_clip`.
+- Análise: `analyze_timeline_clip`, `clear_timeline_annotations` (ritmo por cenas, pausas e nível do clipe).
 - Texto/entrega: `add_timeline_text`, `add_timeline_subtitles`, `validate_timeline`, `render_timeline`, `check_render_job`.
 - Skills: `youtube-long-form`, `tutorial-editing`, `gaming-video-editing`, `video-editor-core`.

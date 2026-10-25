@@ -981,7 +981,9 @@ def add_marker(project: dict, time: float, label: str = "", color: str = "#fbbf2
         "id": _uid("m"),
         "time": _round(parse_timecode(time, "tempo do marcador")),
         "label": (label or "").strip()[:120],
-        "color": color or "#fbbf24",
+        # Cor canônica (#RRGGBB): a timeline pinta o marcador com este valor, e
+        # texto livre aqui viria parar dentro de um atributo style no navegador.
+        "color": normalize_color(color or "#fbbf24", "cor do marcador"),
     }
     project.setdefault("markers", []).append(marker)
     project["markers"].sort(key=lambda m: m["time"])
@@ -1008,12 +1010,107 @@ def add_region(project: dict, start: float, end: float, label: str = "", color: 
         "start": ini,
         "end": fim,
         "label": (label or "").strip()[:120],
-        "color": color or "#4f8cff",
+        "color": normalize_color(color or "#4f8cff", "cor da região"),
     }
     project.setdefault("regions", []).append(region)
     project["regions"].sort(key=lambda r: r["start"])
     _touch(project, "Adicionar região")
     return region
+
+
+def remove_region(project: dict, region_id: str) -> dict:
+    """Apaga uma região pelo id, o par que faltava para `add_region`."""
+    for region in project.get("regions", []):
+        if region["id"] == region_id:
+            project["regions"].remove(region)
+            _touch(project, "Remover região")
+            return region
+    raise ProjectError(f"Região não encontrada: {region_id}")
+
+
+def annotate(
+    project: dict,
+    group: str = "",
+    markers: Optional[list[dict]] = None,
+    regions: Optional[list[dict]] = None,
+    replace: bool = True,
+) -> dict:
+    """
+    Grava de uma vez os candidatos produzidos por uma análise.
+
+    Cada chamada é um passo só de undo — desfazer "analisar pausas" remove as
+    vinte regiões de uma vez, não uma por uma. O `group` marca o que veio da
+    análise, então `replace=True` limpa o grupo anterior antes de escrever:
+    rodar a mesma análise duas vezes não empilha candidatos repetidos.
+    Marcadores e regiões criados à mão não pertencem a grupo nenhum e ficam
+    intactos.
+
+    Nada aqui corta mídia: candidato é anotação, e a decisão de cortar continua
+    sendo do editor.
+    """
+    grupo = _slug(group or "análise")[:40]
+    if len(markers or []) + len(regions or []) > 400:
+        raise ProjectError("São candidatos demais de uma vez (máximo 400); estreite a janela da análise")
+
+    if replace:
+        project["markers"] = [m for m in project.get("markers", []) if m.get("group") != grupo]
+        project["regions"] = [r for r in project.get("regions", []) if r.get("group") != grupo]
+
+    tempos_existentes = {float(m["time"]) for m in project.get("markers", [])}
+    criados_marcadores = 0
+    for item in markers or []:
+        tempo = _round(parse_timecode(item.get("time"), "tempo do marcador"))
+        if tempo in tempos_existentes:
+            continue
+        marcador = add_marker(project, tempo, str(item.get("label") or ""), item.get("color") or "#fbbf24")
+        marcador["group"] = grupo
+        tempos_existentes.add(tempo)
+        criados_marcadores += 1
+
+    faixas_existentes = {(float(r["start"]), float(r["end"])) for r in project.get("regions", [])}
+    criadas_regioes = 0
+    for item in regions or []:
+        inicio = _round(parse_timecode(item.get("start"), "início da região"))
+        fim = _round(parse_timecode(item.get("end"), "fim da região"))
+        if (inicio, fim) in faixas_existentes:
+            continue
+        regiao = add_region(project, inicio, fim, str(item.get("label") or ""), item.get("color") or "#4f8cff")
+        regiao["group"] = grupo
+        faixas_existentes.add((inicio, fim))
+        criadas_regioes += 1
+
+    if not criados_marcadores and not criadas_regioes:
+        raise ProjectError("A análise não trouxe anotação nova para gravar")
+
+    project["markers"].sort(key=lambda m: m["time"])
+    project["regions"].sort(key=lambda r: r["start"])
+    _touch(project, f"Anotar {grupo}")
+    return {
+        "group": grupo,
+        "markers": criados_marcadores,
+        "regions": criadas_regioes,
+        "duplicates_skipped": len(markers or []) + len(regions or []) - criados_marcadores - criadas_regioes,
+    }
+
+
+def clear_annotations(project: dict, group: str) -> dict:
+    """
+    Remove os candidatos de um grupo de análise, sem tocar no que o editor marcou.
+
+    O grupo é obrigatório: sem ele a chamada apagaria marcadores feitos à mão, e
+    limpar anotação é decisão do editor, não um efeito colateral de digitação.
+    """
+    grupo = _slug((group or "").strip())[:40] if (group or "").strip() else ""
+    if not grupo:
+        raise ProjectError("Informe o grupo de anotações a remover")
+    marcadores = [m for m in project.get("markers", []) if m.get("group") == grupo]
+    regioes = [r for r in project.get("regions", []) if r.get("group") == grupo]
+    if not marcadores and not regioes:
+        raise ProjectError(f"Nenhuma anotação no grupo '{group}'")
+    project["markers"] = [m for m in project.get("markers", []) if m.get("group") != grupo]
+    project["regions"] = [r for r in project.get("regions", []) if r.get("group") != grupo]
+    _touch(project, f"Limpar anotações {grupo}")
+    return {"group": grupo, "markers": len(marcadores), "regions": len(regioes)}
 
 
 def set_project_settings(project: dict, **props: Any) -> dict:
@@ -1096,6 +1193,9 @@ def apply_operation(project: dict, operation: str, params: Optional[dict] = None
         "add_marker": lambda: add_marker(project, **params),
         "remove_marker": lambda: remove_marker(project, **params),
         "add_region": lambda: add_region(project, **params),
+        "remove_region": lambda: remove_region(project, **params),
+        "annotate": lambda: annotate(project, **params),
+        "clear_annotations": lambda: clear_annotations(project, **params),
         "settings": lambda: set_project_settings(project, **params),
     }
     if op not in mapa:
@@ -1235,6 +1335,16 @@ def project_summary(project: dict) -> str:
     markers = project.get("markers", [])
     if markers:
         linhas.append("Marcadores: " + ", ".join(f"{format_timecode(m['time'])} {m.get('label', '')}".strip() for m in markers[:20]))
+        if len(markers) > 20:
+            linhas.append(f"(+{len(markers) - 20} marcadores)")
+    regions = project.get("regions", [])
+    if regions:
+        linhas.append("Regiões: " + ", ".join(
+            f"{format_timecode(r['start'])}–{format_timecode(r['end'])} {r.get('label', '')}".strip()
+            for r in regions[:20]
+        ))
+        if len(regions) > 20:
+            linhas.append(f"(+{len(regions) - 20} regiões)")
     return "\n".join(linhas)
 
 

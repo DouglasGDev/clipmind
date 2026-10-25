@@ -102,6 +102,11 @@ const state = {
     programLabel: "",
     sourceLabel: "",
     drag: null,
+    markIn: null,
+    markOut: null,
+    analysis: null,
+    analyzing: false,
+    analysisKind: "scenes",
     mutationDepth: 0,
     refreshTimer: null,
     pollTimer: null,
@@ -374,11 +379,15 @@ function clearProject() {
     state.jobs = [];
     state.selectedClipId = null;
     state.playhead = 0;
+    state.markIn = null;
+    state.markOut = null;
+    state.analysis = null;
     state.programLabel = "";
     stopProgram();
     stopVirtual();
     $("#tracks").innerHTML = '<div class="timeline-empty">Nenhum projeto. Crie um projeto para começar.</div>';
     $("#markers-row").innerHTML = "";
+    $("#regions-row").innerHTML = "";
     $("#ruler").innerHTML = "";
     $("#playhead").hidden = true;
     $("#inspector-form").hidden = true;
@@ -389,6 +398,7 @@ function clearProject() {
     $("#media-list").innerHTML = "";
     $("#issues-list").innerHTML = "";
     $("#markers-list").innerHTML = "";
+    $("#regions-list").innerHTML = "";
     $("#versions-list").innerHTML = "";
     $("#history-list").innerHTML = "";
     $("#jobs-list").innerHTML = "";
@@ -407,6 +417,7 @@ function clearProject() {
     updateTimeReadout();
     updateMonitor();
     updateChatState();
+    updateRegionButtons();
     document.title = "ClipMind — Editor profissional";
     renderMediaList();
 }
@@ -447,6 +458,7 @@ function renderAll() {
     renderInspector();
     renderIssues();
     renderMarkersPanel();
+    renderRegionsPanel();
     renderVersions();
     renderHistory();
     renderJobs();
@@ -655,6 +667,7 @@ function renderTimeline() {
     $("#timeline-content").style.width = `${width}px`;
     renderRuler(duration);
     renderMarkersRow();
+    renderRegionsRow();
     renderTracks();
     updatePlayhead();
     $("#undo-btn").disabled = !state.history.undo?.length;
@@ -688,10 +701,25 @@ function renderMarkersRow() {
     const parts = [`<div class="ruler-spacer" style="height:100%">M</div>`];
     for (const marker of markers) {
         const left = HEADER_W + Number(marker.time) * state.pps;
-        parts.push(`<button type="button" class="marker-pin" data-marker="${escapeHtml(marker.id)}" style="left:${left}px" title="${escapeHtml(marker.label || fmtTime(marker.time))}"></button>`);
+        const cor = escapeHtml(marker.color || "#fbbf24");
+        parts.push(`<button type="button" class="marker-pin" data-marker="${escapeHtml(marker.id)}" style="left:${left}px;background:${cor}" title="${escapeHtml(marker.label || fmtTime(marker.time))}"></button>`);
         if (marker.label) {
-            parts.push(`<span class="marker-label" style="left:${left}px">${escapeHtml(marker.label)}</span>`);
+            parts.push(`<span class="marker-label" style="left:${left}px;color:${cor}">${escapeHtml(marker.label)}</span>`);
         }
+    }
+    row.innerHTML = parts.join("");
+}
+
+function renderRegionsRow() {
+    const row = $("#regions-row");
+    const regions = state.project?.regions || [];
+    const parts = [`<div class="ruler-spacer" style="height:100%">R</div>`];
+    for (const region of regions) {
+        const left = HEADER_W + Number(region.start) * state.pps;
+        const width = Math.max(4, (Number(region.end) - Number(region.start)) * state.pps);
+        const cor = escapeHtml(region.color || "#4f8cff");
+        const titulo = `${region.label || "Região"} · ${fmtTime(region.start, true)} → ${fmtTime(region.end, true)}`;
+        parts.push(`<button type="button" class="region-band" data-region="${escapeHtml(region.id)}" style="left:${left}px;width:${width}px;color:${cor}" title="${escapeHtml(titulo)}"><span>${escapeHtml(region.label || "")}</span></button>`);
     }
     row.innerHTML = parts.join("");
 }
@@ -783,6 +811,10 @@ function seekProgram(seconds) {
 function snapTargets(excludeId) {
     const times = [0, state.playhead];
     for (const marker of state.project?.markers || []) times.push(Number(marker.time));
+    for (const region of state.project?.regions || []) {
+        times.push(Number(region.start));
+        times.push(Number(region.end));
+    }
     for (const track of state.project?.tracks || []) {
         for (const clip of track.clips || []) {
             if (clip.id === excludeId) continue;
@@ -844,6 +876,13 @@ function onTimelinePointerDown(event) {
     if (marker) {
         const found = (state.project?.markers || []).find((item) => item.id === marker.dataset.marker);
         if (found) setPlayhead(Number(found.time));
+        return;
+    }
+
+    const band = event.target.closest(".region-band");
+    if (band) {
+        const found = (state.project?.regions || []).find((item) => item.id === band.dataset.region);
+        if (found) setPlayhead(Number(found.start));
         return;
     }
 
@@ -1011,6 +1050,10 @@ async function onClipDragEnd() {
 }
 
 function selectClip(clipId, { openInspector = true } = {}) {
+    if (clipId !== state.selectedClipId) {
+        state.analysis = null;
+        state.analysisKind = "scenes";
+    }
     state.selectedClipId = clipId;
     $$(".clip").forEach((element) => element.classList.toggle("selected", element.dataset.clip === clipId));
     renderInspector();
@@ -1112,6 +1155,31 @@ async function addMarker() {
     try {
         await operation("add_marker", { time: Number(state.playhead.toFixed(3)), label });
         $("#marker-label").value = "";
+    } catch (error) {
+        toast(error.message, "error");
+    }
+}
+
+function updateRegionButtons() {
+    $("#mark-in-btn").textContent = state.markIn === null ? "Entrada" : `Entrada ${fmtShort(state.markIn)}`;
+    $("#mark-out-btn").textContent = state.markOut === null ? "Saída" : `Saída ${fmtShort(state.markOut)}`;
+    $("#region-btn").disabled = state.markIn === null || state.markOut === null;
+}
+
+function markRegion(which) {
+    state[which] = Number(state.playhead.toFixed(3));
+    updateRegionButtons();
+}
+
+async function addRegion() {
+    if (state.markIn === null || state.markOut === null) return;
+    const start = Math.min(state.markIn, state.markOut);
+    const end = Math.max(state.markIn, state.markOut);
+    try {
+        await operation("add_region", { start, end, label: "" });
+        state.markIn = null;
+        state.markOut = null;
+        updateRegionButtons();
     } catch (error) {
         toast(error.message, "error");
     }
@@ -1251,6 +1319,11 @@ function renderInspector() {
         html.push("</div></div>");
     }
 
+    const midia = clip.type === "video" || clip.type === "audio";
+    if (midia) {
+        html.push(renderAnalysisGroup());
+    }
+
     html.push(`
         <div class="form-actions">
             <button type="button" id="insp-duplicate" class="btn btn-small btn-ghost">Duplicar</button>
@@ -1260,6 +1333,7 @@ function renderInspector() {
     form.innerHTML = html.join("");
     $("#insp-duplicate", form).addEventListener("click", duplicateSelected);
     $("#insp-delete", form).addEventListener("click", deleteSelected);
+    if (midia) wireAnalysis(clip);
     form.onsubmit = (event) => {
         event.preventDefault();
         applyInspector().catch((error) => toast(error.message, "error"));
@@ -1358,6 +1432,149 @@ async function applyInspector() {
     } finally {
         state.mutationDepth = Math.max(0, state.mutationDepth - 1);
     }
+}
+
+/* ------------------------------------------------------------------ análise */
+
+const ANALISES = [
+    ["scenes", "Cortes de cena"],
+    ["silence", "Pausas de silêncio"],
+    ["loudness", "Loudness"],
+];
+
+function renderAnalysisGroup() {
+    const valores = ANALISES.map(([value, label]) => option(value, label, state.analysisKind)).join("");
+    return [
+        '<div class="insp-group"><h4>Análise</h4><div class="analysis-row">',
+        `<select id="analysis-kind">${valores}</select>`,
+        '<label class="ed-field analysis-field" data-kind="scenes">Limiar<input id="analysis-threshold" type="number" min="1" max="100" step="1" value="15"></label>',
+        '<label class="ed-field analysis-field" data-kind="silence">Pausa mín. (s)<input id="analysis-min-pause" type="number" min="0.05" max="60" step="0.05" value="0.5"></label>',
+        '<label class="ed-field analysis-field" data-kind="silence">Ruído (dB)<input id="analysis-noise" type="number" min="-90" max="0" step="1" value="-30"></label>',
+        `<button type="button" class="btn btn-small" id="analysis-run"${state.analyzing ? " disabled" : ""}>${state.analyzing ? "Medindo…" : "Medir"}</button>`,
+        '</div><div class="analysis-results" id="analysis-results"></div></div>',
+    ].join("");
+}
+
+function syncAnalysisFields() {
+    $$(".analysis-field").forEach((field) => {
+        field.hidden = field.dataset.kind !== state.analysisKind;
+    });
+}
+
+function analysisValue(id, fallback) {
+    const input = $(id);
+    const value = Number(input?.value);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+async function runAnalysis(clip, { apply = false } = {}) {
+    if (!state.projectId || state.analyzing) return;
+    state.analyzing = true;
+    renderInspector();
+    try {
+        const data = await api(`/api/editor/projects/${encodeURIComponent(state.projectId)}/analyze`, {
+            method: "POST",
+            body: {
+                clip_id: clip.id,
+                kind: state.analysisKind,
+                threshold: analysisValue("#analysis-threshold", 15),
+                min_pause: analysisValue("#analysis-min-pause", 0.5),
+                noise: analysisValue("#analysis-noise", -30),
+                apply,
+            },
+        });
+        state.analysis = data.analysis;
+        state.analyzing = false;
+        applyPayload(data);
+        const gravadas = data.annotations;
+        if (gravadas) {
+            toast(`${gravadas.markers} marcador(es), ${gravadas.regions} região(ões) em "${gravadas.group}"`, "ok");
+        }
+    } catch (error) {
+        state.analyzing = false;
+        toast(error.message, "error");
+        renderAnalysisResults();
+    }
+}
+
+function analysisItemRow(item) {
+    const tempo = item.start !== undefined ? item.start : item.time;
+    const rotulo = item.start !== undefined
+        ? `${fmtShort(item.start)} → ${fmtShort(item.end)}`
+        : fmtShort(item.time);
+    const score = item.score !== undefined ? `<span class="score">${Number(item.score).toFixed(1)}</span>` : "";
+    return `<button type="button" class="analysis-item" data-analysis-jump="${Number(tempo)}">`
+        + `<span class="time">${escapeHtml(rotulo)}</span>`
+        + `<span class="label">${escapeHtml(item.label || "")}</span>${score}</button>`;
+}
+
+function renderAnalysisResults() {
+    const box = $("#analysis-results");
+    if (!box) return;
+    if (state.analyzing) {
+        box.innerHTML = '<div class="hint">Medindo com FFmpeg…</div>';
+        return;
+    }
+    const analysis = state.analysis;
+    const found = findClip(state.selectedClipId);
+    if (!found || !analysis || analysis.clip_id !== found.clip.id) {
+        box.innerHTML = '<div class="hint">Nada medido neste clipe.</div>';
+        return;
+    }
+    const parts = [`<div class="analysis-summary">${escapeHtml(analysis.summary || "")}</div>`];
+    if (analysis.kind === "loudness") {
+        const m = analysis.measurements || {};
+        parts.push('<div class="analysis-metrics">'
+            + `<span><b>${m.integrated_lufs ?? "?"}</b> LUFS integrado</span>`
+            + `<span><b>${m.lra_lu ?? "?"}</b> LU de range</span>`
+            + `<span><b>${m.true_peak_dbfs ?? "?"}</b> dBFS de pico</span>`
+            + "</div>");
+        box.innerHTML = parts.join("");
+        return;
+    }
+    const candidatos = analysis.candidates || [];
+    parts.push(`<div class="analysis-list">${candidatos.slice(0, 40).map(analysisItemRow).join("")}</div>`);
+    if (candidatos.length > 40) parts.push(`<div class="hint">+${candidatos.length - 40} candidatos</div>`);
+    const grupo = analysis.group || "";
+    const temGrupo = (state.project?.markers || []).some((m) => m.group === grupo)
+        || (state.project?.regions || []).some((r) => r.group === grupo);
+    parts.push('<div class="analysis-actions">'
+        + `<button type="button" class="btn btn-small btn-primary" id="analysis-apply"${candidatos.length ? "" : " disabled"}>Aplicar como candidatos</button>`
+        + (grupo
+            ? `<button type="button" class="btn btn-small btn-ghost" id="analysis-clear"${temGrupo ? "" : " disabled"}>Limpar "${grupo}"</button>`
+            : "")
+        + "</div>");
+    box.innerHTML = parts.join("");
+}
+
+function wireAnalysis(clip) {
+    const seletor = $("#analysis-kind");
+    seletor.value = state.analysisKind;
+    seletor.addEventListener("change", () => {
+        state.analysisKind = seletor.value;
+        syncAnalysisFields();
+    });
+    $("#analysis-run").addEventListener("click", () => runAnalysis(clip));
+    syncAnalysisFields();
+    $("#analysis-results").addEventListener("click", (event) => {
+        const jump = event.target.closest("[data-analysis-jump]");
+        if (jump) {
+            setPlayhead(Number(jump.dataset.analysisJump));
+            return;
+        }
+        if (event.target.closest("#analysis-apply")) {
+            runAnalysis(clip, { apply: true });
+            return;
+        }
+        if (event.target.closest("#analysis-clear")) {
+            const grupo = state.analysis?.group;
+            if (!grupo) return;
+            operation("clear_annotations", { group: grupo })
+                .then(() => toast(`Anotações de "${grupo}" removidas`, "ok"))
+                .catch((error) => toast(error.message, "error"));
+        }
+    });
+    renderAnalysisResults();
 }
 
 /* -------------------------------------------------------------------- chat */
@@ -1828,6 +2045,21 @@ function renderMarkersPanel() {
         </div>`).join("");
 }
 
+function renderRegionsPanel() {
+    const list = $("#regions-list");
+    const regions = state.project?.regions || [];
+    if (!regions.length) {
+        list.innerHTML = '<div class="hint">Nenhuma região.</div>';
+        return;
+    }
+    list.innerHTML = regions.map((region) => `
+        <div class="marker-row">
+            <span class="time">${fmtTime(region.start)} → ${fmtTime(region.end)}</span>
+            <button type="button" class="link" data-region-jump="${Number(region.start)}">${escapeHtml(region.label || "Região")}</button>
+            <button type="button" class="remove" data-region-remove="${escapeHtml(region.id)}">remover</button>
+        </div>`).join("");
+}
+
 async function loadVersions() {
     if (!state.projectId) return;
     try {
@@ -2143,6 +2375,9 @@ function bindEvents() {
     $("#duplicate-btn").addEventListener("click", duplicateSelected);
     $("#delete-btn").addEventListener("click", deleteSelected);
     $("#marker-btn").addEventListener("click", addMarker);
+    $("#mark-in-btn").addEventListener("click", () => markRegion("markIn"));
+    $("#mark-out-btn").addEventListener("click", () => markRegion("markOut"));
+    $("#region-btn").addEventListener("click", addRegion);
     $("#marker-label").addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
             event.preventDefault();
@@ -2185,6 +2420,15 @@ function bindEvents() {
         const jump = event.target.closest("[data-marker-jump]");
         if (jump) setPlayhead(Number(jump.dataset.markerJump));
     });
+    $("#regions-list").addEventListener("click", (event) => {
+        const remove = event.target.closest("[data-region-remove]");
+        if (remove) {
+            operation("remove_region", { region_id: remove.dataset.regionRemove }).catch((error) => toast(error.message, "error"));
+            return;
+        }
+        const jump = event.target.closest("[data-region-jump]");
+        if (jump) setPlayhead(Number(jump.dataset.regionJump));
+    });
     $("#versions-list").addEventListener("click", (event) => {
         const restore = event.target.closest("[data-version]");
         if (restore) restoreVersion(restore.dataset.version);
@@ -2225,6 +2469,12 @@ function bindEvents() {
         } else if (key === "m") {
             event.preventDefault();
             addMarker();
+        } else if (key === "i") {
+            event.preventDefault();
+            markRegion("markIn");
+        } else if (key === "o") {
+            event.preventDefault();
+            markRegion("markOut");
         } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
             event.preventDefault();
             const frame = 1 / Math.max(1, Number(state.project?.settings?.fps) || 30);

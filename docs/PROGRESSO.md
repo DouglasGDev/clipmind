@@ -3,16 +3,78 @@
 Arquivo de acompanhamento. **Feito** = testado; **experimental** = funciona no
 fluxo feliz sem suíte de testes; **planejado** = não existe.
 
-Última atualização: 2026-10-24.
+Última atualização: 2026-10-25.
 
 ## Como verificar
 
 ```bash
-python -m pytest tests -q     # suíte completa (motor, render, skills, API)
+python -m pytest tests -q     # suíte completa (motor, render, análise, skills, API, agente)
 python server.py              # / (ferramentas clássicas) e /editor (timeline)
 ```
 
 ## Feito nesta rodada
+
+- **Análise de conteúdo por clipe** (`editor_analysis.py`): `scene_cuts` (`scdet`),
+  `silence_ranges` (`silencedetect`) e `loudness` (`ebur128`) rodam FFmpeg na
+  janela do clipe e os leitores de log viraram a fonte única de verdade — o QC do
+  render (`editor_render.validate_render`) passou a usar os mesmos parsers em vez
+  de manter regex próprio. Os tempos voltam em **tempo de timeline** e em tempo do
+  arquivo, respeitando `in` e `speed`.
+- **Candidatos gravados no projeto**: operações `annotate` e `clear_annotations`
+  (e `remove_region`), um passo de undo por chamada, agrupadas em `cenas`/`pausas`.
+  Reanalisar substitui só o próprio grupo, preservando marcadores e regiões feitos
+  à mão; duplicados são pulados, mais de 400 candidatos são recusados e cor
+  inválida vira erro em vez de branco silencioso. A análise **não corta nada**.
+- **Rota `POST /api/editor/projects/{id}/analyze`** com o FFmpeg em
+  `asyncio.to_thread` (o event loop serve o WebSocket da interface). Sem `apply`
+  não grava nada; `apply` numa análise sem candidato devolve 400.
+- **Interface** — regiões deixaram de ser invisíveis: faixa clicável na timeline
+  (o clique leva o playhead ao início), painel de regiões com ir/remover, snap
+  encaixando nas bordas das regiões, `I` marca entrada, `O` marca saída e `+` cria
+  a região entre elas. O inspetor ganhou o bloco **Análise** (tipo, parâmetros
+  por tipo, **Medir**, **Aplicar como candidatos**, **Limpar "grupo"**), que
+  funciona sem LM Studio ligado.
+- **Agente**: `analyze_timeline_clip` e `clear_timeline_annotations` entraram em
+  `TOOLS` (19 → 21 ferramentas) e o prompt de sistema agora obriga a medir antes
+  de propor corte. A resposta traz `grupo` para a IA saber o que limpar.
+- **Defeito de medição corrigido na raiz**: o true peak saía 0,1 dBFS onde havia
+  3,9 dBFS, porque `-ss` na entrada faz o FFmpeg descartar ~21 ms de priming do
+  decodificador AAC antes do filtro. A janela de áudio passou a ser recortada com
+  `atrim`/`asetpts` dentro de `-af`; confirmado decodificando o fixture para WAV e
+  medindo a amostra de pico. Teste travado nos números reais (−4,6 LUFS, 3,0 LU,
+  +3,9 dBFS) existe para a regressão não voltar.
+- **Dois defeitos pegos pelos testes antes de qualquer commit**: `parse_black_log`
+  devolvia faixa de preto com duração zero (parênteses redundantes deslocaram os
+  índices dos grupos capturados) e `/analyze` com `apply` estourava
+  `KeyError: 'markers'` porque `build_annotations` omitia uma das chaves conforme o
+  tipo de análise.
+- **Skills**: 16 `SKILL.md` atualizados — `tools:` com as duas ferramentas onde o
+  método depende de medir, seção 9 reescrita para dizer o que é medido hoje e o que
+  continua não existindo (transcrição, waveform, curva de pico por instante,
+  filtros de áudio, LUT, scopes, rastreamento), e frases que afirmavam "não há
+  detecção de silêncio/cena" foram corrigidas. `test_skills.py` recusa ferramenta
+  inventada, e `accessibility-and-quality-control` ficou só com `analyze_timeline_clip`
+  porque seu procedimento não grava candidatos.
+- **Docs**: README (21 ferramentas do agente, 22 operações, rota `/analyze`,
+  atalhos `I`/`O`, bloco Análise, `editor_analysis.py` na árvore, 709 testes) e
+  roadmap (Fase 2 com status por item, §1.2 e §8 corrigidos, regras de continuação).
+
+Total: **709 testes em ~18 s** (`python -m pytest tests -q`), sem xfail e sem
+LM Studio. Novos: `tests/test_analysis.py` (54) e `tests/test_analysis_agent.py` (12).
+
+Verificado na interface com o servidor real (`/editor`): no projeto
+`p_cc3f9bd97c`, o clipe de `video_com_pausas.mp4` iniciado em 6 s devolveu as
+pausas em **00:08 → 00:10** e **00:12 → 00:14** (`source_start` 2,0 e 6,0),
+**Aplicar como candidatos** escreveu 2 regiões do grupo `pausas` (`#4F8CFF`)
+gastando um único passo de undo (`annotate`), **Limpar "pausas"** zerou as faixas
+e a regravação as trouxe de volta; clicar na faixa levou o playhead ao início da
+região e `I`/`O`/`+` criaram uma região manual de 8 s a 12 s ao lado das medidas.
+O loudness do mesmo clipe pela rota deu **−4,6 LUFS integrados, LRA 3,0 LU, true
+peak +3,9 dBFS** — os mesmos três números que `tests/test_analysis.py` trava, agora
+medidos pelo servidor de verdade, com o pico acima de 0 dBFS que o `-ss` na entrada
+escondia.
+
+## Rodada anterior (2026-10-24)
 
 - **Suíte HTTP da API** (`tests/test_api.py`, 83 testes): criar/listar/ativar/apagar
   projeto, cada rota de operação, undo/redo, versões, validação, render, filas,
@@ -23,73 +85,45 @@ python server.py              # / (ferramentas clássicas) e /editor (timeline)
   projeto, clipe ou versão que não existe é recurso ausente, o resto é pedido
   inválido. Nenhuma resposta vaza traceback.
 - **Operação sem efeito não consome undo nem versão** (`_assinatura` compara o
-  estado ignorando `updated_at`/`recent_operations`). Antes, repetir o mesmo
-  ajuste empilhava desfazeres que não desfaziam nada.
-- **Volume validado nas duas entradas** (`_valida_volume`): `add_clip` aceitava
-  9 e `set_clip_properties` cortava em 4, contradizendo as docstrings que as
-  ferramentas mostram ao modelo. Agora ambas rejeitam fora de 0–4.
-- **Mensagens de erro legíveis**: "Clipes não encontrado" → "Clipe não
-  encontrado"; a lista de cores aceitas passou a citar só os nomes em português
-  (30 itens EN/PT misturados era ilegível).
-- **Undo/redo validam o projeto antes de olhar a pilha**: id desconhecido cai em
-  404, não em "nada para desfazer".
-- **Suíte do agente da timeline** (`tests/test_timeline_agent.py`, 65 testes):
-  as 19 ferramentas congeladas por nome, varredura provando que todo id
-  inexistente volta como `{"ok": false}` em JSON, rejeição de colisão/velocidade/
-  volume/cor sem mover nada nem gastar undo, exclusão exigindo `confirm`,
-  divisão/duplicação, corte de contexto do prompt, e o LM Studio **simulado**:
-  ordem dos eventos (`tool_call` → `tool_result` → `text` → `answer`), histórico
-  isolado por projeto, `reset_chat`, resposta vazia, conexão recusada, token de
-  autenticação mascarado, nenhum modelo baixado, descoberta de modelo e timeout
-  de turno — com cliente falso, sem depender do LM Studio.
-- **README** com o editor profissional: fluxo, atalhos, tabela de endpoints
-  `/api/editor/*`, as 19 operações, variáveis `CLIPMIND_PROJECTS` e
-  `CLIPMIND_TURN_TIMEOUT`, árvore de arquitetura e seção de testes.
-
-Total: **641 testes em ~15 s** (`python -m pytest tests -q`), sem xfail e sem
-LM Studio. Verificado também contra o servidor real: projeto `p_cfbc64a86a`
-editado pela API, prévia de 6 s renderizada (640x360, 30 fps, −21,3 LUFS, true
-peak −15,2 dBFS, sem preto, delta A/V 0,0) e QC aprovado.
-
-## Rodada anterior
-
-- Motor de timeline não destrutivo coberto por teste: conversão de tempo/fps,
-  add/move/trim/split/delete/duplicate/slip/slide/roll, ripple, colisões,
+  estado ignorando `updated_at`/`recent_operations`).
+- **Volume validado nas duas entradas** (`_valida_volume`): `add_clip` aceitava 9
+  e `set_clip_properties` cortava em 4, contradizendo as docstrings que o modelo lê.
+- **Suíte do agente da timeline** (`tests/test_timeline_agent.py`, 65 testes na
+  época; 67 hoje): ferramentas congeladas por nome, varredura provando que todo id
+  inexistente volta como `{"ok": false}`, rejeição de colisão/velocidade/volume/cor
+  sem gastar undo, exclusão exigindo `confirm`, e o LM Studio **simulado** (ordem
+  dos eventos, histórico por projeto, `reset_chat`, token mascarado, timeout de
+  turno) com cliente falso.
+- **README** com o editor profissional: fluxo, atalhos, endpoints, variáveis
+  `CLIPMIND_PROJECTS` e `CLIPMIND_TURN_TIMEOUT`, árvore e seção de testes.
+- **Motor e render cobertos por teste**: conversão de tempo/fps,
+  add/move/trim/split/delete/duplicate/slip/slide/roll com ripple, colisões,
   velocidade, transform/cor com limites, transição, fades, marcadores, regiões,
-  `validate_project`, undo/redo transacional, persistência em disco, versões e
-  restauração entre projetos (`tests/test_project_engine.py`).
-- Render FFmpeg com QC medido por ffprobe/ebur128/blackdetect: prévia vs.
-  exportação com mesma duração e proporção, multi-faixa com sobreposição,
-  título, legenda e trilha, velocidade com `atempo` em cadeia, nomes de saída
-  únicos, cancelamento removendo o parcial e erros claros sem FFmpeg
-  (`tests/test_render.py`).
-- Cancelamento em Windows: o processo FFmpeg é colhido (`_reapar_processo`)
-  antes de apagar o parcial, com retentativas (`_apagar_arquivo`), e
-  `RenderCancelled` limpa o diretório temporário mesmo disparando no meio do
-  laço de progresso.
-- Legendas: posição (inferior/centro/topo) validada no motor, ASS próprio com
-  alinhamento determinístico e fala que excede o clipe cortada.
-- Cores deixaram de ser texto livre: `normalize_color` aceita `#RRGGBB`,
-  `0xRRGGBB` e nomes (PT e EN) e devolve erro claro para o resto — antes uma
-  cor desconhecida virava branco em silêncio na legenda.
-- Skills: 21 catálogos com as 10 seções obrigatórias em ordem, ferramentas
-  conferidas contra `timeline_agent.TOOLS` e teste de catálogo/carga/busca
-  (`tests/test_skills.py`).
-- `editor_skills.load_skill`: o corpo truncado era calculado e descartado. Agora
-  devolve o corpo truncado + frontmatter, com o flag `truncated`.
-- Turno do agente com teto (`CLIPMIND_TURN_TIMEOUT`, padrão 900 s), duração
-  registrada em log e exibida na interface.
+  `validate_project`, undo/redo transacional, persistência, versões e restauração;
+  render com QC por ffprobe/ebur128/blackdetect, prévia vs. export com mesma
+  duração e proporção, cancelamento colhendo o processo no Windows e apagando o
+  parcial (`tests/test_project_engine.py`, `tests/test_render.py`).
+- **Skills**: 21 catálogos com as 10 seções obrigatórias em ordem, ferramentas
+  conferidas contra `timeline_agent.TOOLS`, carga sob demanda com truncamento
+  sinalizado (`tests/test_skills.py`).
+- Cores deixaram de ser texto livre: `normalize_color` aceita `#RRGGBB`, `0xRRGGBB`
+  e nomes PT/EN e devolve erro claro para o resto.
 
 ## Pendente (próxima rodada)
 
-- Fase 2 do roadmap: transcrição com timestamps e edição pelo texto, com corte
-  revisável e reversível; análise de cenas e silêncio gravada no projeto.
+- **Curva de pico de áudio por instante** para fechar 2.4 do roadmap — hoje
+  `loudness` devolve três números agregados do clipe, não onde o nível está alto.
+- **Transcrição com timestamps (2.1)** e edição pelo texto (2.2): exige instalar um
+  ASR no LM Studio, decisão do usuário. Nada instalado hoje.
 - Validar tamanho e tipo do `POST /upload` no servidor (hoje o filtro é só o
   `accept` da interface) e listar os uploads por projeto.
 - Keyframes, áudio por faixa (ducking, EQ, compressor) e LUTs — Fase 3.
 - Presets de plataforma e reenquadramento 9:16 assistido — Fase 4.
+- Fila com retomada, cache de análise por hash do arquivo, proxies e aceleração por
+  hardware — Fase 5.
 
 ## Limitações conhecidas
 
 Ver seção 8 de `docs/ROADMAP_PROFESSIONAL_EDITOR.md` (keyframes, transições,
-cor, áudio, reenquadramento, undo em memória, tempo do modelo local).
+cor, áudio, transcrição, reenquadramento, undo em memória, custo de cada medição,
+tempo do modelo local).

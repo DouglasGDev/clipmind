@@ -38,16 +38,6 @@ from editor_project import ProjectStore, get_clip
 # --------------------------------------------------------------------- infra
 
 
-@pytest.fixture
-def loja(tmp_path, monkeypatch) -> ProjectStore:
-    """Loja isolada para o agente, sem conversa pendente entre testes."""
-    nova = ProjectStore(root=tmp_path / "projetos")
-    monkeypatch.setattr(timeline_agent, "STORE", nova)
-    timeline_agent.reset_chat()
-    yield nova
-    timeline_agent.reset_chat()
-
-
 def _resposta(texto: str) -> dict:
     """Toda ferramenta devolve uma string JSON; jamais um rastreio."""
     assert isinstance(texto, str), "ferramenta precisa devolver texto"
@@ -122,6 +112,8 @@ NOMES_ESPERADOS = {
     "fine_timeline_edit",
     "set_timeline_clip",
     "add_timeline_marker",
+    "analyze_timeline_clip",
+    "clear_timeline_annotations",
     "validate_timeline",
     "render_timeline",
     "check_render_job",

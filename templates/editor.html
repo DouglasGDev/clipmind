@@ -118,12 +118,18 @@
                         <input id="marker-label" placeholder="Marcador" autocomplete="off">
                         <button id="marker-btn" class="icon-btn" type="button" title="Marcador no playhead (M)">+</button>
                     </div>
+                    <div class="toolbar-group region-add">
+                        <button id="mark-in-btn" class="btn" type="button" title="Marcar entrada no playhead (I)">Entrada</button>
+                        <button id="mark-out-btn" class="btn" type="button" title="Marcar saída no playhead (O)">Saída</button>
+                        <button id="region-btn" class="icon-btn" type="button" title="Criar região entre entrada e saída" disabled>+</button>
+                    </div>
                     <span id="timeline-hint" class="muted"></span>
                 </div>
                 <div class="timeline-scroll" id="timeline-scroll">
                     <div class="timeline-content" id="timeline-content">
                         <div class="ruler" id="ruler"></div>
                         <div class="markers-row" id="markers-row"></div>
+                        <div class="regions-row" id="regions-row"></div>
                         <div class="tracks" id="tracks"></div>
                         <div class="playhead" id="playhead"><div class="playhead-handle"></div></div>
                     </div>
@@ -218,6 +224,11 @@
                     <div class="section">
                         <h3>Marcadores</h3>
                         <div id="markers-list"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Regiões</h3>
+                        <div id="regions-list"></div>
                     </div>
 
                     <div class="section">

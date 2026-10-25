@@ -27,6 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
+import editor_analysis
 from editor_project import (
     ProjectError,
     ProjectStore,
@@ -894,10 +895,7 @@ def validate_render(path: str | Path, project: dict, esperado: Optional[float] =
     if info["has_video"]:
         saida, ok = _run_analysis(["-i", str(arquivo), "-vf", "blackdetect=d=0.5:pix_th=0.10", "-an", "-f", "null", "-"])
         if ok:
-            pretos = []
-            for match in re.finditer(r"black_start:([\d.]+)\s+black_end:([\d.]+)", saida):
-                inicio, fim = float(match.group(1)), float(match.group(2))
-                pretos.append([inicio, fim])
+            pretos = editor_analysis.parse_black_log(saida)
             measurements["black_ranges"] = pretos[:20]
             if pretos:
                 amostra = ", ".join(f"{format_timecode(a)}–{format_timecode(b)}" for a, b in pretos[:4])
@@ -912,15 +910,13 @@ def validate_render(path: str | Path, project: dict, esperado: Optional[float] =
     if info["has_audio"]:
         saida, ok = _run_analysis(["-i", str(arquivo), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"])
         if ok:
-            integrados = re.findall(r"I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", saida)
-            peaks = re.findall(r"Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", saida)
-            lras = re.findall(r"LRA:\s*(-?\d+(?:\.\d+)?)\s*LU", saida)
-            if integrados:
-                measurements["loudness_lufs"] = float(integrados[-1])
-            if lras:
-                measurements["lra_lu"] = float(lras[-1])
-            if peaks:
-                measurements["true_peak_dbfs"] = float(peaks[-1])
+            medidas = editor_analysis.parse_ebur128(saida)
+            if "integrated_lufs" in medidas:
+                measurements["loudness_lufs"] = medidas["integrated_lufs"]
+            if "lra_lu" in medidas:
+                measurements["lra_lu"] = medidas["lra_lu"]
+            if "true_peak_dbfs" in medidas:
+                measurements["true_peak_dbfs"] = medidas["true_peak_dbfs"]
             if measurements.get("loudness_lufs") is not None and measurements["loudness_lufs"] < -60:
                 issues.append({"severity": "warning", "code": "audio_silence", "message": "O áudio final está praticamente silencioso"})
             if measurements.get("true_peak_dbfs") is not None and measurements["true_peak_dbfs"] > -0.1:

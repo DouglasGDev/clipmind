@@ -3,7 +3,7 @@ name: professional-cutting
 title: Corte Profissional
 description: Decisões de entrada e saída, ripple, roll, slip e slide para cortes limpos e sem quadros de flash.
 triggers: corte, corte seco, ripple, roll, slip, slide, aparar clipe, J-cut, L-cut, quadro de flash
-tools: inspect_edit_project, trim_timeline_clip, split_timeline_clip, move_timeline_clip, fine_timeline_edit, delete_timeline_clip, duplicate_timeline_clip, set_timeline_clip, add_timeline_marker, validate_timeline, render_timeline, check_render_job
+tools: inspect_edit_project, trim_timeline_clip, split_timeline_clip, move_timeline_clip, fine_timeline_edit, delete_timeline_clip, duplicate_timeline_clip, set_timeline_clip, add_timeline_marker, validate_timeline, render_timeline, check_render_job, analyze_timeline_clip, clear_timeline_annotations
 ---
 
 ## 1. Objetivo
@@ -18,12 +18,14 @@ Executar cortes precisos: escolher a borda e a operação certas, preservar hand
 ## 3. Diagnóstico antes de editar
 1. Chame `inspect_edit_project` e anote ids, `start`, duração, in/out e faixa.
 2. Converta timeline em tempo do arquivo: a velocidade 1, `in = clip.in + (ponto - clip.start)`; com outra, multiplique o deslocamento por `speed`.
-3. Confirme os cortes com o usuário, roteiro ou ação visível. Sem transcrição, detecção de silêncio ou waveform, não adivinhe fala.
-4. Rode `validate_timeline` e registre colisões, buracos e fades.
-5. Garanta handles de 0,3–0,5 s antes e depois do corte.
+3. Meça o clipe antes de propor ponto: `analyze_timeline_clip(clip_id, kind="silence", noise=-30, min_pause=0.4)` devolve as pausas (início e fim em tempo de timeline) e `kind="scenes", threshold=15` devolve as trocas de cena, cada uma com score e também o tempo no arquivo.
+4. Revise os tempos devolvidos, grave como candidatos (`apply_candidates=true`) para o humano ver na timeline e no inspector, e só então corte. Limpe o grupo com `clear_timeline_annotations` se a sugestão não servir.
+5. Sem transcrição, o texto falado continua vindo do usuário ou do roteiro: a medição dá tempo, não palavra.
+6. Rode `validate_timeline` e registre colisões, buracos e fades.
+7. Garanta handles de 0,3–0,5 s antes e depois do corte.
 
 ## 4. Procedimento
-1. Carregue esta skill e inspecione; marque os pontos-alvo se ajudar.
+1. Carregue esta skill, inspecione e meça o clipe; marque os pontos-alvo (marcadores seus ou candidatos da análise) se ajudar.
 2. Escolha a operação (`fine_timeline_edit` para roll, slip e slide):
   - `trim_timeline_clip`: apara no tempo do arquivo; `ripple=true` fecha o buraco, `false` preserva o sincronismo.
   - `roll`: move a fronteira de clipes encostados; duração fixa e handles nos dois.
@@ -50,6 +52,7 @@ Executar cortes precisos: escolher a borda e a operação certas, preservar hand
 - Usar slip para mudar a duração ou slide com buraco dos lados.
 - Deixar 1–2 frames de sobra no corte, criando flash frame.
 - Excluir sem confirmação ou cortar por relógio.
+- Tratar candidato gravado pela análise como corte já feito.
 
 ## 7. Checklist de qualidade
 - [ ] Cada corte tem início, fim e handles intencionais.
@@ -65,9 +68,10 @@ Executar cortes precisos: escolher a borda e a operação certas, preservar hand
 - Flash frames e sincronia fina exigem revisão humana no export; a prévia 360p pode mascarar 1 frame.
 
 ## 9. Limitações atuais do ClipMind
-Não há transcrição, detecção de silêncio, waveform, análise de fala nem clipes vinculados de áudio/vídeo. J/L cuts são alinhamentos manuais entre v1 e a1. Não há keyframes, rastreamento nem prévia em tempo real; a prévia é um render 360p. Para decisões finas, o humano fornece timecodes e revisa o export quadro a quadro.
+`analyze_timeline_clip` mede um clipe por vez com FFmpeg: `kind="scenes"` (`scdet`) dá as trocas de cena com score e os tempos da timeline e do arquivo; `kind="silence"` (`silencedetect`) dá as pausas com início, fim e duração; `kind="loudness"` (`ebur128`) dá três números agregados do recorte — LUFS integrado, LRA em LU e true peak em dBFS —, sem curva de nível por momento. `apply_candidates=true` grava cenas como marcadores (`cenas`) e pausas como regiões (`pausas`) num único passo de undo, preservando o que foi feito à mão, pulando duplicados e recusando mais de 400 candidatos de uma vez (estreite a janela ou suba o `threshold`); a resposta do agente traz os 40 primeiros e o `total_candidatos`; `clear_timeline_annotations(group)` remove só o grupo medido. A análise não corta: o corte vem de `trim_timeline_clip`, `split_timeline_clip`, `delete_timeline_clip` e `fine_timeline_edit`, depois do aval humano. Não há transcrição, timecode por palavra, identificação de falante, waveform nem curva de pico; medir LUFS não normaliza, pois não há EQ, compressor ajustável, de-esser, ducking, normalização nem keyframes de áudio — só `afade` e `volume` por clipe (0–4), com limitador fixo. Não há cor além de brilho/contraste/saturação/gamma, nem rastreamento, multicam, destaque automático ou prévia em tempo real; a prévia é um render 360p. J/L cuts são alinhamentos manuais entre v1 e a1. Transição é só fade e a velocidade é constante.
 
 ## 10. Ferramentas e skills relacionadas
 - Corte: `trim_timeline_clip`, `split_timeline_clip`, `fine_timeline_edit`, `delete_timeline_clip`.
 - Apoio: `inspect_edit_project`, `move_timeline_clip`, `set_timeline_clip`, `add_timeline_marker`, `validate_timeline`, `render_timeline`, `check_render_job`.
+- Medição: `analyze_timeline_clip` (cenas, pausas, loudness) e `clear_timeline_annotations`.
 - Skills: `video-editor-core`, `transitions-and-keyframes`, `storytelling-and-pacing`.
