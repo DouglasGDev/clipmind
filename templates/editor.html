@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipMind — Editor profissional</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/editor.css">
+</head>
+<body class="editor-body">
+    <header class="ed-topbar">
+        <div class="brand">
+            <span class="brand-mark">🎬</span>
+            <div>
+                <h1>ClipMind</h1>
+                <p>Editor profissional</p>
+            </div>
+        </div>
+
+        <div class="project-switcher">
+            <button id="toggle-media" class="btn btn-small btn-ghost" type="button">Mídia</button>
+            <select id="project-select" aria-label="Projeto ativo"></select>
+            <button id="new-project-btn" class="btn btn-small" type="button">Novo projeto</button>
+            <span id="project-meta" class="project-meta"></span>
+        </div>
+
+        <div class="topbar-actions">
+            <button id="ai-status" class="status checking" type="button" title="Verificar LM Studio">Verificando IA...</button>
+            <a href="/" class="btn btn-small btn-ghost">Ferramentas</a>
+        </div>
+    </header>
+
+    <main class="ed-shell">
+        <aside class="ed-left panel" id="media-panel">
+            <section class="side-section">
+                <div class="side-head">
+                    <h2>Mídia</h2>
+                    <span id="media-count" class="muted"></span>
+                </div>
+                <div class="upload-row">
+                    <button id="upload-media-btn" class="btn btn-small" type="button">Enviar arquivo</button>
+                    <input id="upload-media-input" type="file" accept="video/*,audio/*" multiple hidden>
+                </div>
+                <div class="inline-add">
+                    <input id="local-path-input" placeholder="Caminho local" autocomplete="off">
+                    <button id="local-add-btn" class="btn btn-small" type="button">+</button>
+                </div>
+                <div id="media-list" class="media-list"></div>
+            </section>
+
+            <section class="side-section">
+                <div class="side-head"><h2>Inserir</h2></div>
+                <div class="insert-grid">
+                    <button id="add-title-btn" class="tool-btn" type="button"><span class="tool-icon">T</span><span class="tool-label">Título</span></button>
+                    <button id="upload-subtitle-btn" class="tool-btn" type="button"><span class="tool-icon">CC</span><span class="tool-label">Legendas</span></button>
+                    <input id="subtitle-input" type="file" accept=".srt,.vtt,.ass" hidden>
+                </div>
+                <p id="subtitle-state" class="hint"></p>
+            </section>
+
+            <section class="side-section grow">
+                <div class="side-head">
+                    <h2>Skills</h2>
+                    <span id="skill-count" class="muted"></span>
+                </div>
+                <div id="skills-list" class="skills-list"></div>
+            </section>
+        </aside>
+
+        <section class="ed-center">
+            <div class="panel monitor">
+                <div class="panel-head">
+                    <div class="monitor-tabs">
+                        <button class="tab active" data-monitor="program" type="button">Programa</button>
+                        <button class="tab" data-monitor="source" type="button">Fonte</button>
+                    </div>
+                    <div class="monitor-meta">
+                        <span id="project-format">—</span>
+                        <span id="monitor-label"></span>
+                    </div>
+                </div>
+                <div class="monitor-stage" id="monitor-stage">
+                    <video id="program-video" controls playsinline preload="metadata" hidden></video>
+                    <video id="source-video" controls playsinline preload="metadata" hidden></video>
+                    <div id="monitor-empty" class="monitor-empty">
+                        <span>Sem prévia renderizada</span>
+                        <button id="render-preview-empty" class="btn btn-small" type="button">Gerar prévia</button>
+                    </div>
+                </div>
+                <div class="transport">
+                    <button id="play-btn" class="play-btn" type="button" title="Reproduzir (Espaço)">▶</button>
+                    <span id="time-readout" class="time-readout">00:00:00.000 / 00:00:00.000</span>
+                    <div class="transport-right">
+                        <label class="check" title="Encaixar em bordas, marcadores e playhead">
+                            <input id="snap-toggle" type="checkbox" checked> Ímã
+                        </label>
+                        <button id="zoom-out" class="icon-btn" type="button" title="Diminuir zoom">−</button>
+                        <input id="zoom-range" type="range" min="20" max="300" step="5" value="80" aria-label="Zoom da timeline">
+                        <button id="zoom-in" class="icon-btn" type="button" title="Aumentar zoom">+</button>
+                        <button id="zoom-fit" class="btn btn-small btn-ghost" type="button">Ajustar</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel timeline">
+                <div class="timeline-toolbar">
+                    <div class="toolbar-group">
+                        <button id="undo-btn" class="icon-btn" type="button" title="Desfazer (Ctrl+Z)" disabled>↶</button>
+                        <button id="redo-btn" class="icon-btn" type="button" title="Refazer (Ctrl+Shift+Z)" disabled>↷</button>
+                    </div>
+                    <div class="toolbar-group">
+                        <button id="split-btn" class="btn" type="button" title="Dividir no playhead (S)">Dividir</button>
+                        <button id="duplicate-btn" class="btn" type="button" title="Duplicar clipe">Duplicar</button>
+                        <button id="delete-btn" class="btn" type="button" title="Excluir clipe (Delete)">Excluir</button>
+                    </div>
+                    <div class="toolbar-group marker-add">
+                        <input id="marker-label" placeholder="Marcador" autocomplete="off">
+                        <button id="marker-btn" class="icon-btn" type="button" title="Marcador no playhead (M)">+</button>
+                    </div>
+                    <span id="timeline-hint" class="muted"></span>
+                </div>
+                <div class="timeline-scroll" id="timeline-scroll">
+                    <div class="timeline-content" id="timeline-content">
+                        <div class="ruler" id="ruler"></div>
+                        <div class="markers-row" id="markers-row"></div>
+                        <div class="tracks" id="tracks"></div>
+                        <div class="playhead" id="playhead"><div class="playhead-handle"></div></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <aside class="ed-right panel">
+            <div class="right-tabs">
+                <button class="tab active" data-tab="inspector" type="button">Clipe</button>
+                <button class="tab" data-tab="ai" type="button">IA</button>
+                <button class="tab" data-tab="output" type="button">Saída<span id="job-dot" class="job-dot" hidden></span></button>
+                <button class="tab" data-tab="project" type="button">Projeto</button>
+            </div>
+            <div class="right-body">
+                <section class="tab-panel active" id="panel-inspector">
+                    <div id="inspector-empty" class="empty">Nenhum clipe selecionado</div>
+                    <form id="inspector-form" hidden></form>
+                </section>
+
+                <section class="tab-panel" id="panel-ai">
+                    <div class="chat-head">
+                        <span id="chat-state">pronta</span>
+                        <button id="chat-reset" class="btn btn-small btn-ghost" type="button">Nova conversa</button>
+                    </div>
+                    <div id="chat-messages" class="chat-messages"></div>
+                    <form id="chat-form" class="chat-input">
+                        <input id="chat-input" placeholder="Ex: corte os silêncios e adicione um título" autocomplete="off">
+                        <button id="chat-send" class="btn btn-primary" type="submit">Enviar</button>
+                    </form>
+                </section>
+
+                <section class="tab-panel" id="panel-output">
+                    <div class="section">
+                        <h3>Renderizar</h3>
+                        <div class="render-actions">
+                            <button id="preview-btn" class="btn btn-primary" type="button">Prévia 360p</button>
+                            <button id="export-btn" class="btn" type="button">Exportar</button>
+                        </div>
+                        <label class="ed-field">Arquivo
+                            <input id="export-name" placeholder="nome do arquivo" autocomplete="off">
+                        </label>
+                        <div class="ed-grid-2">
+                            <label class="ed-field">Formato
+                                <select id="export-format">
+                                    <option value="mp4">MP4 (H.264/AAC)</option>
+                                    <option value="mkv">MKV</option>
+                                    <option value="mov">MOV</option>
+                                    <option value="webm">WebM (VP9/Opus)</option>
+                                </select>
+                            </label>
+                            <label class="ed-field">CRF
+                                <input id="export-crf" type="number" min="0" max="51" value="20">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Renderizações</h3>
+                        <div id="jobs-list" class="jobs-list"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Controle de qualidade</h3>
+                        <div id="qc-panel" class="empty">Nenhum render concluído.</div>
+                    </div>
+                </section>
+
+                <section class="tab-panel" id="panel-project">
+                    <div class="section">
+                        <h3>Configurações</h3>
+                        <form id="settings-form">
+                            <div class="ed-field">Nome
+                                <input id="ps-name" autocomplete="off">
+                            </div>
+                            <div class="ed-grid-3">
+                                <label class="ed-field">Largura<input id="ps-width" type="number" min="16" max="7680" step="2"></label>
+                                <label class="ed-field">Altura<input id="ps-height" type="number" min="16" max="4320" step="2"></label>
+                                <label class="ed-field">FPS<input id="ps-fps" type="number" min="1" max="240" step="0.001"></label>
+                            </div>
+                            <div class="form-actions">
+                                <button class="btn btn-small btn-primary" type="submit">Aplicar</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="section">
+                        <h3>Validação</h3>
+                        <div id="issues-list" class="issues-list"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Marcadores</h3>
+                        <div id="markers-list"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Versões</h3>
+                        <div id="versions-list"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Histórico</h3>
+                        <div id="history-list"></div>
+                    </div>
+
+                    <div class="section">
+                        <button id="delete-project-btn" class="btn btn-small danger" type="button">Excluir projeto</button>
+                    </div>
+                </section>
+            </div>
+        </aside>
+    </main>
+
+    <div id="toast-area"></div>
+
+    <dialog id="project-dialog">
+        <form id="project-form">
+            <h2>Novo projeto</h2>
+            <label class="ed-field">Nome
+                <input id="np-name" value="Meu vídeo" maxlength="120" required autocomplete="off">
+            </label>
+            <label class="ed-field">Formato
+                <select id="np-preset">
+                    <option value="1920x1080@30">YouTube 1080p · 30 fps</option>
+                    <option value="1920x1080@60">YouTube 1080p · 60 fps</option>
+                    <option value="3840x2160@30">YouTube 4K · 30 fps</option>
+                    <option value="1080x1920@30">Vertical 1080x1920 · 30 fps</option>
+                    <option value="1080x1920@60">Vertical 1080x1920 · 60 fps</option>
+                    <option value="custom">Personalizado</option>
+                </select>
+            </label>
+            <div class="ed-grid-3">
+                <label class="ed-field">Largura<input id="np-width" type="number" min="16" max="7680" step="2" value="1920"></label>
+                <label class="ed-field">Altura<input id="np-height" type="number" min="16" max="4320" step="2" value="1080"></label>
+                <label class="ed-field">FPS<input id="np-fps" type="number" min="1" max="240" step="0.001" value="30"></label>
+            </div>
+            <div class="dialog-actions">
+                <button id="np-cancel" class="btn btn-small btn-ghost" type="button">Cancelar</button>
+                <button class="btn btn-small btn-primary" type="submit">Criar</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="title-dialog">
+        <form id="title-form">
+            <h2>Novo título</h2>
+            <label class="ed-field">Texto
+                <textarea id="title-text" maxlength="2000" required></textarea>
+            </label>
+            <div class="ed-grid-2">
+                <label class="ed-field">Início (s)<input id="title-start" type="number" min="0" step="0.01" value="0"></label>
+                <label class="ed-field">Duração (s)<input id="title-duration" type="number" min="0.2" step="0.01" value="3"></label>
+            </div>
+            <div class="ed-grid-2">
+                <label class="ed-field">Tamanho<input id="title-size" type="number" min="8" max="300" value="56"></label>
+                <label class="ed-field">Posição
+                    <select id="title-position">
+                        <option value="inferior">Inferior</option>
+                        <option value="topo">Topo</option>
+                        <option value="centro">Centro</option>
+                        <option value="inferior-esquerda">Inferior esquerda</option>
+                        <option value="inferior-direita">Inferior direita</option>
+                    </select>
+                </label>
+            </div>
+            <div class="ed-grid-2">
+                <label class="ed-field">Cor<input id="title-color" type="color" value="#ffffff"></label>
+                <label class="check" style="align-self:flex-end;padding-bottom:7px"><input id="title-background" type="checkbox" checked> Caixa de fundo</label>
+            </div>
+            <div class="dialog-actions">
+                <button id="title-cancel" class="btn btn-small btn-ghost" type="button">Cancelar</button>
+                <button class="btn btn-small btn-primary" type="submit">Adicionar</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="confirm-dialog">
+        <form method="dialog">
+            <h2 id="confirm-title">Confirmar</h2>
+            <p id="confirm-message" class="muted"></p>
+            <div class="dialog-actions">
+                <button id="confirm-cancel" class="btn btn-small btn-ghost" value="cancel">Cancelar</button>
+                <button id="confirm-ok" class="btn btn-small danger" value="ok">Confirmar</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="skill-dialog">
+        <form method="dialog">
+            <h2 id="skill-title">Skill</h2>
+            <p id="skill-meta" class="muted"></p>
+            <pre id="skill-content"></pre>
+            <div class="dialog-actions">
+                <button class="btn btn-small" value="close">Fechar</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="/static/editor.js" defer></script>
+</body>
+</html>

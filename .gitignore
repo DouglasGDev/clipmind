@@ -27,6 +27,12 @@ output/
 test_videos/
 uploads/
 
+# Projetos locais e logs (caminhos absolutos da máquina de cada um)
+projects/
+*.log
+.pytest_cache/
+__pycache__/
+
 # OS
 .DS_Store
 Thumbs.db

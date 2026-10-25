@@ -49,9 +49,11 @@ from youtube_editor_tools import (
     rotate_video,
 )
 from agent import AgentError, agent_status, reset_chat, run_agent_turn
+import editor_api
 
 
 app = FastAPI(title="ClipMind - Editor de Vídeo com IA")
+app.include_router(editor_api.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -111,6 +113,9 @@ async def send_to_all(message: dict):
         except Exception:
             if connection in active_connections:
                 active_connections.remove(connection)
+
+
+editor_api.configure(send_to_all)
 
 
 @app.get("/", response_class=HTMLResponse)
