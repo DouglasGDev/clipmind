@@ -16,7 +16,7 @@ Use quando houver fala e o destino exigir legendas, em conteúdo sem som e antes
 - `inspect_edit_project`: resolução, fps, duração, faixas e clipes.
 - Confirme o arquivo `.srt`, `.vtt` ou `.ass` fornecido. Sem arquivo, não invente texto nem prometa transcrição.
 - Verifique áudio na fonte ou na a1 e defina a área segura (16:9 ou 9:16).
-- Meça o clipe antes de concluir que o áudio está ruim: `analyze_timeline_clip(project_id, clip_id, kind="loudness")` devolve `integrated_lufs`, `lra_lu` e `true_peak_dbfs`; `kind="silence"` com `noise=-30` e `min_pause=0.5` mede as pausas longas que a legenda também precisa cobrir.
+- Meça o clipe antes de concluir que o áudio está ruim: `analyze_timeline_clip(project_id, clip_id, kind="loudness")` devolve `integrated_lufs`, `lra_lu` e `true_peak_dbfs`; `kind="silence"` com `noise=-30` e `min_pause=0.5` mede as pausas longas que a legenda também precisa cobrir; `kind="peaks"` mostra a curva de pico por instante.
 - Rode `validate_timeline` para separar erro de aviso.
 
 ## 4. Procedimento
@@ -60,7 +60,7 @@ Use quando houver fala e o destino exigir legendas, em conteúdo sem som e antes
 
 ## 9. Limitações atuais do ClipMind
 Existe medição: `analyze_timeline_clip` roda FFmpeg num clipe e devolve LUFS integrado, LRA e true peak (`kind="loudness"`), intervalos de pausa (`kind="silence"`, com `noise` e `min_pause`) e trocas de cena com score (`kind="scenes"`). O QC do render usa os mesmos leitores e reporta `loudness_lufs`, `lra_lu`, `true_peak_dbfs` e `black_ranges`. Medir não é avaliar acessibilidade: inteligibilidade, contraste e legibilidade continuam conferidos por humano.
-Não existe: transcrição, legenda automática, faixa CC alternável, identificação de falante, audiodescrição, waveform, curva de pico por instante, detector de flash, EQ, compressor, normalização para LUFS alvo, automação de volume, keyframes, LUT, balanço de branco e scopes. Legenda é só queimada na imagem e só há a faixa `a1`; a prévia é um render 360p. Alternativas: gerar `.srt` externo, ajustar `volume` por clipe com medição antes e depois, tratar áudio fora e reimportar, revisar flashes manualmente. Para automatizar faltariam ASR, modelo de legendas, stream separado, análise de flash e cadeia de filtros de áudio.
+Não existe: transcrição, legenda automática, faixa CC alternável, identificação de falante, audiodescrição, waveform desenhada na timeline, detector de flash, EQ, compressor, normalização para LUFS alvo, automação de volume, keyframes, LUT, balanço de branco e scopes. Legenda é só queimada na imagem e só há a faixa `a1`; a prévia é um render 360p. Alternativas: gerar `.srt` externo, ajustar `volume` por clipe com medição antes e depois, tratar áudio fora e reimportar, revisar flashes manualmente. Para automatizar faltariam ASR, modelo de legendas, stream separado, análise de flash e cadeia de filtros de áudio.
 
 ## 10. Ferramentas e skills relacionadas
 Ferramentas: `configure_edit_project`, `inspect_edit_project`, `add_timeline_text`, `add_timeline_subtitles`, `set_timeline_clip`, `analyze_timeline_clip` (só leitura: este procedimento não grava candidatos, então não usa `clear_timeline_annotations`), `validate_timeline`, `render_timeline`, `check_render_job`. Skills: `export-and-delivery`, `render-diagnostics`, `timeline-debugging` e `multicam-editing`.

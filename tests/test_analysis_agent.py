@@ -9,6 +9,8 @@ grupo para poder limpar, e nada disso apaga o que o editor marcou à mão.
 
 import inspect
 
+import pytest
+
 from conftest import MEDIA, requires_media
 
 import editor_project as ep
@@ -88,6 +90,43 @@ def test_analyze_loudness_mede_sem_produzir_candidato(loja):
     assert resposta["candidatos"] == []
     assert resposta["medicoes"]["integrated_lufs"] == -4.6
     assert resposta["grupo"] == ""
+
+
+@requires_media
+def test_analyze_peaks_devolve_resumo_da_curva_e_pico_em_tempo_de_timeline(loja):
+    pid, cid = _projeto_com_pausas(loja)
+    resposta = _resposta(timeline_agent.analyze_timeline_clip(
+        pid, clip_id=cid, kind="peaks", rise=3
+    ))
+    assert resposta["ok"] is True
+    assert resposta["grupo"] == "picos"
+    assert resposta["curva"]["intervalo_s"] == 0.1
+    assert resposta["curva"]["pontos"] == 100
+    assert resposta["curva"]["limite_dbfs"] == pytest.approx(2.55, abs=0.1)
+    # A curva completa fica na interface; o modelo recebe o resumo.
+    assert "curve" not in resposta
+    assert resposta["total_candidatos"] == 1
+    pico = resposta["candidatos"][0]
+    assert pico["time"] == pytest.approx(10.0)
+    assert pico["source_time"] == pytest.approx(0.0)
+    assert pico["peak_dbfs"] == pytest.approx(3.92, abs=0.05)
+
+
+@requires_media
+def test_apply_de_picos_grava_marcador_do_grupo_picos_em_um_passo(loja):
+    pid, cid = _projeto_com_pausas(loja)
+    resposta = _resposta(timeline_agent.analyze_timeline_clip(
+        pid, clip_id=cid, kind="peaks", rise=3, apply_candidates=True
+    ))
+    assert resposta["anotacao"]["markers"] == 1
+    assert resposta["anotacao"]["regions"] == 0
+    projeto = loja.get(pid)
+    assert [(m["time"], m["group"], m["label"]) for m in projeto["markers"]] == [
+        (10.0, "picos", "Pico 3.9 dBFS")
+    ]
+    assert loja.history(pid)["undo"] == ["Anotar picos", "adicionar"]
+    loja.undo(pid)
+    assert loja.get(pid)["markers"] == []
 
 
 # ---------------------------------------------------------------- gravar

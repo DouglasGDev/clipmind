@@ -275,6 +275,10 @@ async def analyze(project_id: str, request: Request):
     demais para deixar no event loop, que serve o WebSocket da interface. Com
     `apply=true` os candidatos viram marcadores/regiões num passo só de undo; o
     corte em si continua sendo decisão de quem edita.
+
+    `kind="peaks"` devolve também a curva de pico por instante: `interval` é o
+    passo em segundos, `rise` é quantos dB acima da mediana um ponto precisa
+    para virar candidato e `min_gap` separa picos vizinhos.
     """
     body = await _corpo(request)
     try:
@@ -291,6 +295,9 @@ async def analyze(project_id: str, request: Request):
             threshold=float(body.get("threshold", 15)),
             noise=float(body.get("noise", -30)),
             min_pause=float(body.get("min_pause", 0.5)),
+            rise=float(body.get("rise", 6)),
+            min_gap=float(body.get("min_gap", 1)),
+            interval=float(body.get("interval", 0.1)),
         )
     except (ProjectError, TypeError, ValueError) as e:
         raise _handle(e if isinstance(e, ProjectError) else ProjectError(str(e)))

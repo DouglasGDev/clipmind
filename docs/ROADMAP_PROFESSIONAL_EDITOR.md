@@ -21,7 +21,7 @@ Data da auditoria: 2026-10-24. Atualizada em 2026-10-25 com a análise de conte�
 | Consistência prévia/export | mesma timeline, mesmo enquadramento; prévia só reduz altura | `test_export_e_preview_tem_mesma_duracao_e_proporcao` |
 | Progresso, cancelamento, log | `-progress pipe:1`, percentual real, parcial apagado após matar o processo | `test_manager_cancela_e_apaga_o_parcial`, `test_cancel_antes_de_iniciar_nao_renderiza_nada` |
 | QC pós-render | ffprobe + `blackdetect` + `ebur128` + delta de início A/V, separado em técnico vs estético | `validate_render`, `test_preview_renderiza_e_mediu_com_ffprobe` |
-| Análise de conteúdo por clipe | trocas de cena (`scdet`), pausas (`silencedetect`) e LUFS/LRA/true peak (`ebur128`) medidos na janela do clipe, convertidos para tempo de timeline e de arquivo; candidatos viram marcadores/regiões num único undo e nada é cortado pela análise | `editor_analysis.py`, `tests/test_analysis.py` (54 testes), `tests/test_analysis_agent.py` (12 testes) |
+| Análise de conteúdo por clipe | trocas de cena (`scdet`), pausas (`silencedetect`), LUFS/LRA/true peak (`ebur128`) e curva de pico por instante (`astats`) medidos na janela do clipe, convertidos para tempo de timeline e de arquivo; candidatos viram marcadores/regiões num único undo e nada é cortado pela análise; a curva de picos é desenhada no painel do inspetor | `editor_analysis.py`, `tests/test_analysis.py` (74 testes), `tests/test_analysis_agent.py` (14 testes) |
 | Codecs e containers | libx264/libx265/VP9, NVENC quando existir, `faststart`, CRF/preset/audio bitrate validados | `_encoder_args`, `test_encoder_args_*` |
 | Legendas | SRT/VTT/ASS parseados, posição (inferior/centro/topo), margem, fonte, cor validadas, queima verificada quadro a quadro | `_write_subtitle_ass`, `test_write_subtitle_ass_*` |
 | Títulos | texto, tamanho, cor, posição, fundo | `add_text_clip`, `test_subtitle_position_*` |
@@ -33,9 +33,9 @@ Data da auditoria: 2026-10-24. Atualizada em 2026-10-25 com a análise de conte�
 
 ### 1.2 O que NÃO existe e é exigido pelo objetivo
 
-Transcrição com timestamps de palavra, edição pelo texto, curva de pico de
-áudio por instante, corte automático a partir da medição (a análise hoje só
-propõe candidatos), keyframes de verdade, áudio profissional (EQ, compressor,
+Transcrição com timestamps de palavra, edição pelo texto, corte automático a
+partir da medição (a análise hoje só propõe candidatos), keyframes de verdade,
+áudio profissional (EQ, compressor,
 limiter ajustável, de-esser, NR, ducking, automação, normalização para um alvo),
 LUTs e scopes, correção vs. gradação separadas, auto-reframe com rastreamento,
 sincronismo multicâmera, presets por plataforma, legendas com destaque palavra
@@ -85,9 +85,9 @@ A/V 0,0).*
 | 2.1 | Transcrição local com timestamps de palavra (Whisper via LM Studio ou `faster-whisper`), gravada no projeto como `transcript` | **planejado** — exige instalar um ASR | projeto JSON guarda falas com início/fim; sem modelo, a ferramenta devolve erro claro e o editor segue usando | `test_transcript.py` |
 | 2.2 | Edição pelo texto: seleccionar palavra → cortar; edição por transcrição é revisável e reversível (operação única no undo) | **planejado** — depende de 2.1 | cortar "aquele erro" remove exatamente o intervalo da fala e fecha o buraco | idem |
 | 2.3 | Detecção de cena dentro do projeto (marcadores candidatos, não cortes automáticos) | **concluído** | `scdet` com `threshold` 1–100, score por troca, tempo de timeline *e* de arquivo; no clipe de teste a cena sai em 2,0 s com score 15,6 | `tests/test_analysis.py` |
-| 2.4 | Detecção de silêncio e de picos de áudio como regiões revisáveis | **parcial** — as pausas estão prontas; a curva de pico por instante não existe | limiar (`noise`) e duração (`min_pause`) configuráveis, pausas do teste em (2,0–4,0) e (6,0–8,0); `loudness` mede LUFS/LRA/true peak do clipe; nada é apagado sem aprovação | `tests/test_analysis.py` |
-| 2.5 | Ferramenta expondo tudo ao agente | **concluído** — `analyze_timeline_clip` + `clear_timeline_annotations` | a IA lista pausas e cenas com os tempos, grava candidatos com `apply_candidates=true` e limpa o grupo; o prompt obriga a medir antes de propor corte | `tests/test_analysis_agent.py` |
-| 2.6 | Candidatos visíveis e revisáveis na interface | **concluído** | regiões aparecem na faixa da timeline, o bloco **Análise** do inspetor mede, aplica e limpa sem LLM; snap encaixa nas bordas da região | `tests/test_analysis.py` (rota `/analyze`) + uso manual em `/editor` |
+| 2.4 | Detecção de silêncio e de picos de áudio como regiões revisáveis | **concluído** | pausas com `noise`/`min_pause` em (2,0–4,0) e (6,0–8,0); curva de pico por instante (`interval` 0,1 s, até 600 pontos, `null` no silêncio digital) e picos acima de `rise` dB da mediana separados por `min_gap`; `loudness` mede LUFS/LRA/true peak; nada é apagado sem aprovação | `tests/test_analysis.py` |
+| 2.5 | Ferramenta expondo tudo ao agente | **concluído** — `analyze_timeline_clip` + `clear_timeline_annotations` | a IA lista pausas, cenas e picos com os tempos, grava candidatos com `apply_candidates=true` e limpa o grupo; o prompt obriga a medir antes de propor corte | `tests/test_analysis_agent.py` |
+| 2.6 | Candidatos visíveis e revisáveis na interface | **concluído** | regiões aparecem na faixa da timeline, marcadores `cenas`/`picos` também, e o bloco **Análise** do inspetor mede, aplica e limpa sem LLM; a curva de picos é desenhada no painel; snap encaixa nas bordas da região | `tests/test_analysis.py` (rota `/analyze`) + uso manual em `/editor` |
 
 **Modelo extra necessário:** um ASR (Whisper `large-v3` ou um modelo menor)
 instalado no LM Studio para 2.1 e 2.2. Sem modelo carregado, a fase degrada com
@@ -182,8 +182,8 @@ distribuição de histograma) e cada um é reversível com um undo.
 
 1. Transcrição (2.1) é o único item da fase 2 travado por dependência externa:
    exige instalar um ASR no LM Studio, decisão do usuário. Sem ela, 2.2 não
-   existe. Os outros caminhos abertos são a curva de pico por instante (fechar
-   2.4) e a fase 3.
+   existe. Com a curva de picos, a 2.4 fechou; o próximo passo é a fase 3
+   (cadeia de áudio e cor de verdade).
 2. Antes de mexer no renderizador, rode `python -m pytest tests -q` e mantenha
    verde; o render tem testes com FFmpeg real que pegam regressão de janela de
    legenda, sync A/V e cancelamento.

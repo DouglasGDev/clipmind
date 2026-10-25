@@ -447,7 +447,7 @@ async def agent_status() -> dict:
             }
     except Exception as e:
         if _is_masked_auth_failure(e):
-            return {"connected": False, "model": MODEL_NAME, "error": AUTH_HINT}
+            return {"connected": False, "model": MODEL_NAME or "(auto)", "error": AUTH_HINT}
         return {
             "connected": False,
             "model": MODEL_NAME or "(auto)",

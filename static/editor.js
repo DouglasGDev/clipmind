@@ -83,6 +83,8 @@ function mediaKind(path) {
     return "other";
 }
 
+const ANALYSIS_DEFAULTS = { threshold: 15, min_pause: 0.5, noise: -30, rise: 6, min_gap: 1 };
+
 const state = {
     projectId: null,
     project: null,
@@ -107,6 +109,7 @@ const state = {
     analysis: null,
     analyzing: false,
     analysisKind: "scenes",
+    analysisParams: { ...ANALYSIS_DEFAULTS },
     mutationDepth: 0,
     refreshTimer: null,
     pollTimer: null,
@@ -1053,6 +1056,7 @@ function selectClip(clipId, { openInspector = true } = {}) {
     if (clipId !== state.selectedClipId) {
         state.analysis = null;
         state.analysisKind = "scenes";
+        state.analysisParams = { ...ANALYSIS_DEFAULTS };
     }
     state.selectedClipId = clipId;
     $$(".clip").forEach((element) => element.classList.toggle("selected", element.dataset.clip === clipId));
@@ -1440,16 +1444,20 @@ const ANALISES = [
     ["scenes", "Cortes de cena"],
     ["silence", "Pausas de silêncio"],
     ["loudness", "Loudness"],
+    ["peaks", "Picos de áudio"],
 ];
 
 function renderAnalysisGroup() {
     const valores = ANALISES.map(([value, label]) => option(value, label, state.analysisKind)).join("");
+    const p = state.analysisParams;
     return [
         '<div class="insp-group"><h4>Análise</h4><div class="analysis-row">',
         `<select id="analysis-kind">${valores}</select>`,
-        '<label class="ed-field analysis-field" data-kind="scenes">Limiar<input id="analysis-threshold" type="number" min="1" max="100" step="1" value="15"></label>',
-        '<label class="ed-field analysis-field" data-kind="silence">Pausa mín. (s)<input id="analysis-min-pause" type="number" min="0.05" max="60" step="0.05" value="0.5"></label>',
-        '<label class="ed-field analysis-field" data-kind="silence">Ruído (dB)<input id="analysis-noise" type="number" min="-90" max="0" step="1" value="-30"></label>',
+        `<label class="ed-field analysis-field" data-kind="scenes">Limiar<input id="analysis-threshold" data-param="threshold" type="number" min="1" max="100" step="1" value="${p.threshold}"></label>`,
+        `<label class="ed-field analysis-field" data-kind="silence">Pausa mín. (s)<input id="analysis-min-pause" data-param="min_pause" type="number" min="0.05" max="60" step="0.05" value="${p.min_pause}"></label>`,
+        `<label class="ed-field analysis-field" data-kind="silence">Ruído (dB)<input id="analysis-noise" data-param="noise" type="number" min="-90" max="0" step="1" value="${p.noise}"></label>`,
+        `<label class="ed-field analysis-field" data-kind="peaks">Acima da mediana (dB)<input id="analysis-rise" data-param="rise" type="number" min="0" max="40" step="0.5" value="${p.rise}"></label>`,
+        `<label class="ed-field analysis-field" data-kind="peaks">Distância mín. (s)<input id="analysis-min-gap" data-param="min_gap" type="number" min="0.1" max="60" step="0.1" value="${p.min_gap}"></label>`,
         `<button type="button" class="btn btn-small" id="analysis-run"${state.analyzing ? " disabled" : ""}>${state.analyzing ? "Medindo…" : "Medir"}</button>`,
         '</div><div class="analysis-results" id="analysis-results"></div></div>',
     ].join("");
@@ -1469,19 +1477,22 @@ function analysisValue(id, fallback) {
 
 async function runAnalysis(clip, { apply = false } = {}) {
     if (!state.projectId || state.analyzing) return;
+    // Lido antes do render: o formulário é recriado com "Medindo…" e não pode
+    // apagar o que a pessoa acabou de digitar.
+    const parametros = {
+        threshold: analysisValue("#analysis-threshold", state.analysisParams.threshold),
+        min_pause: analysisValue("#analysis-min-pause", state.analysisParams.min_pause),
+        noise: analysisValue("#analysis-noise", state.analysisParams.noise),
+        rise: analysisValue("#analysis-rise", state.analysisParams.rise),
+        min_gap: analysisValue("#analysis-min-gap", state.analysisParams.min_gap),
+    };
+    state.analysisParams = parametros;
     state.analyzing = true;
     renderInspector();
     try {
         const data = await api(`/api/editor/projects/${encodeURIComponent(state.projectId)}/analyze`, {
             method: "POST",
-            body: {
-                clip_id: clip.id,
-                kind: state.analysisKind,
-                threshold: analysisValue("#analysis-threshold", 15),
-                min_pause: analysisValue("#analysis-min-pause", 0.5),
-                noise: analysisValue("#analysis-noise", -30),
-                apply,
-            },
+            body: { clip_id: clip.id, kind: state.analysisKind, ...parametros, apply },
         });
         state.analysis = data.analysis;
         state.analyzing = false;
@@ -1508,6 +1519,29 @@ function analysisItemRow(item) {
         + `<span class="label">${escapeHtml(item.label || "")}</span>${score}</button>`;
 }
 
+function analysisCurve(analysis) {
+    const curva = analysis.curve || [];
+    const niveis = curva.map((p) => p.peak_dbfs).filter((v) => typeof v === "number");
+    if (!curva.length || !niveis.length) return "";
+    const topo = Math.max(6, Math.ceil(Math.max(...niveis) + 3));
+    const fundo = -60;
+    const altura = 48;
+    const largura = 600;
+    const passo = largura / curva.length;
+    const y = (db) => altura - ((Math.max(fundo, Math.min(topo, db)) + 60) / (topo + 60)) * altura;
+    const barras = curva.map((p, i) => {
+        if (typeof p.peak_dbfs !== "number") return "";
+        const h = Math.max(0.8, altura - y(p.peak_dbfs));
+        return `<rect x="${(i * passo).toFixed(2)}" y="${(altura - h).toFixed(2)}"`
+            + ` width="${Math.max(1, passo - 0.5).toFixed(2)}" height="${h.toFixed(2)}"></rect>`;
+    }).join("");
+    let linha = "";
+    if (typeof analysis.level_dbfs === "number" && analysis.level_dbfs <= topo && analysis.level_dbfs >= fundo) {
+        linha = `<line x1="0" x2="${largura}" y1="${y(analysis.level_dbfs).toFixed(2)}" y2="${y(analysis.level_dbfs).toFixed(2)}"></line>`;
+    }
+    return `<div class="analysis-curve"><svg viewBox="0 0 ${largura} ${altura}" preserveAspectRatio="none" aria-hidden="true">${barras}${linha}</svg></div>`;
+}
+
 function renderAnalysisResults() {
     const box = $("#analysis-results");
     if (!box) return;
@@ -1532,6 +1566,7 @@ function renderAnalysisResults() {
         box.innerHTML = parts.join("");
         return;
     }
+    if (analysis.curve) parts.push(analysisCurve(analysis));
     const candidatos = analysis.candidates || [];
     parts.push(`<div class="analysis-list">${candidatos.slice(0, 40).map(analysisItemRow).join("")}</div>`);
     if (candidatos.length > 40) parts.push(`<div class="hint">+${candidatos.length - 40} candidatos</div>`);
@@ -1555,6 +1590,12 @@ function wireAnalysis(clip) {
         syncAnalysisFields();
     });
     $("#analysis-run").addEventListener("click", () => runAnalysis(clip));
+    $$(".analysis-field input").forEach((input) => {
+        input.addEventListener("input", () => {
+            const valor = Number(input.value);
+            if (Number.isFinite(valor)) state.analysisParams[input.dataset.param] = valor;
+        });
+    });
     syncAnalysisFields();
     $("#analysis-results").addEventListener("click", (event) => {
         const jump = event.target.closest("[data-analysis-jump]");

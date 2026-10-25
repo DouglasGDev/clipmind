@@ -14,6 +14,76 @@ python server.py              # / (ferramentas clássicas) e /editor (timeline)
 
 ## Feito nesta rodada
 
+- **Curva de pico de áudio por instante** (`editor_analysis.py`, `kind="peaks"`):
+  `astats` mede o pico de cada quadro de áudio (≈21 ms a 48 kHz) na janela do
+  clipe, recortada com `atrim`/`asetpts` dentro de `-af` — a mesma regra do
+  loudness, nunca `-ss` na entrada. `peak_curve` agrupa os quadros por intervalo
+  (padrão 0,1 s) guardando o pico de cada faixa, devolve `null` no silêncio
+  digital em vez de inventar número e limita a curva a **600 pontos** (o intervalo
+  efetivo sobe sozinho em clipes longos). No fixture, o primeiro quadro mede
+  **+3,92 dBFS**, o tom contínuo **−0,45 dBFS** e os trechos de 2,0 s e 6,0 s
+  voltam `null`.
+- **Picos como candidatos revisáveis** (`find_peaks`): mediana dos trechos
+  audíveis (acima de −60 dBFS), limite = mediana + `rise` (0–40 dB, padrão 6),
+  cada trecho contíguo acima do limite vira um candidato no seu ponto mais alto
+  com a duração do trecho, e `min_gap` (0,1–60 s, padrão 1 s) mantém o mais alto
+  entre vizinhos. Tempo de timeline e de arquivo respeitam `in` e `speed`; o
+  grupo é `picos`, o marcador é `#F97316` e o rótulo é `Pico 3.9 dBFS`.
+- **Rota `/analyze`**: aceita `rise`, `min_gap` e `interval` além dos parâmetros
+  já existentes; valor fora da faixa devolve 400. Com `apply=true` os picos
+  entram num único passo de undo (`annotate`) e a resposta conta o que ficou no
+  projeto depois da escrita.
+- **Agente**: `analyze_timeline_clip` ganhou `rise` e `min_gap`; a resposta traz
+  um resumo da curva (`intervalo_s`, `pontos`, `mediana_dbfs`, `limite_dbfs`) e,
+  no máximo, 40 candidatos por chamada. O prompt de sistema lista `peaks` entre
+  as medições obrigatórias antes de propor corte. As 21 ferramentas não mudaram
+  de nome.
+- **Interface**: a lista de análise ganhou **Picos de áudio**, com os campos
+  `Acima da mediana (dB)` e `Distância mín. (s)` visíveis só nesse tipo. O painel
+  desenha a curva em SVG (até 600 barras, linha tracejada do limite) e mantém os
+  botões **Aplicar como candidatos** e **Limpar "picos"**.
+- **Defeito pego na verificação ao vivo**: **Medir** recriava o inspetor antes de
+  montar o pedido, e o `rise` digitado (3) era trocado pelo padrão (6) na
+  releitura dos campos. Corrigido com `state.analysisParams`: os valores são
+  lidos antes do re-render, guardados no estado e reaplicados no formulário. Na
+  interface, `rise=3` passou a produzir “1 pico acima de 2.5 dBFS” e continuou
+  `3` depois do resultado.
+- **Status do agente quando o LM Studio exige token**: o ramo de falha de
+  autenticação devolvia modelo vazio; passou a devolver `"(auto)"`, como o ramo
+  desconectado. Nenhum token é lido ou gravado.
+- **Skills**: 14 `SKILL.md` (vídeo, áudio, corte, render, acessibilidade, b-roll,
+  documentário, games, podcast, short-form, storytelling, transições, tutorial e
+  YouTube) citam `kind="peaks"`, a curva no painel e a limpeza do grupo `picos`;
+  a seção de limitações diferencia a curva de análise de uma waveform na
+  timeline.
+- **Docs**: README (curva no bloco Análise, `peaks`/`rise`/`min_gap`/`interval`
+  na rota, 731 testes) e roadmap (2.4 concluído, 2.5/2.6 com picos, §9 apontando
+  a Fase 3).
+
+Total: **731 testes em 34 s** nesta execução (`python -m pytest tests -q`), sem
+xfail e sem LM Studio; o único aviso é o de depreciação do Starlette/httpx na
+própria biblioteca. Novos nesta rodada: `tests/test_analysis.py` 54 → 74 e
+`tests/test_analysis_agent.py` 12 → 14.
+
+Verificado no servidor real (`127.0.0.1:8011` com `CLIPMIND_PROJECTS`
+descartável, sem tocar no servidor da porta 8000): projeto `p_39b343b1d5`, clipe
+`c_d60f625a2c` de `video_com_pausas.mp4` (10 s). `/analyze` com
+`kind="peaks", rise=3` devolveu **100 pontos a cada 0,1 s**, mediana
+**−0,45 dBFS**, limite **2,55 dBFS**, primeiro ponto **+3,92 dBFS**, `null` em
+2,0 s e 6,0 s e **1 candidato em 0,0** com rótulo `Pico 3.9 dBFS`. O `apply`
+gravou 1 marcador do grupo `picos` (`#F97316`) gastando um único passo
+(`annotate`); o undo removeu e a regravação trouxe de volta.
+
+Na interface `/editor`, o clipe selecionado mostrou a opção **Picos de áudio**,
+apenas os dois campos desse tipo, a curva desenhada em SVG (600×48, 62 barras
+audíveis e a linha tracejada do limite) e a medição com `rise=3` resumida em
+“1 pico(s) acima de 2.5 dBFS”. **Aplicar como candidatos** gravou o marcador e
+**Limpar "picos"** removeu. O navegador embutido estava com viewport 0×0
+(`visibilityState=hidden`): a verificação foi feita por eventos `pointerdown` e
+chamadas da própria página, sem screenshot nem clique humano.
+
+## Rodada anterior (2026-10-25 — análise de conteúdo)
+
 - **Análise de conteúdo por clipe** (`editor_analysis.py`): `scene_cuts` (`scdet`),
   `silence_ranges` (`silencedetect`) e `loudness` (`ebur128`) rodam FFmpeg na
   janela do clipe e os leitores de log viraram a fonte única de verdade — o QC do
@@ -59,8 +129,8 @@ python server.py              # / (ferramentas clássicas) e /editor (timeline)
   atalhos `I`/`O`, bloco Análise, `editor_analysis.py` na árvore, 709 testes) e
   roadmap (Fase 2 com status por item, §1.2 e §8 corrigidos, regras de continuação).
 
-Total: **709 testes em ~18 s** (`python -m pytest tests -q`), sem xfail e sem
-LM Studio. Novos: `tests/test_analysis.py` (54) e `tests/test_analysis_agent.py` (12).
+Total daquela rodada: **709 testes em ~18 s**, sem xfail e sem LM Studio. Novos:
+`tests/test_analysis.py` (54) e `tests/test_analysis_agent.py` (12).
 
 Verificado na interface com o servidor real (`/editor`): no projeto
 `p_cc3f9bd97c`, o clipe de `video_com_pausas.mp4` iniciado em 6 s devolveu as
@@ -111,13 +181,15 @@ escondia.
 
 ## Pendente (próxima rodada)
 
-- **Curva de pico de áudio por instante** para fechar 2.4 do roadmap — hoje
-  `loudness` devolve três números agregados do clipe, não onde o nível está alto.
+- **Waveform na timeline e curva do projeto inteiro**: a curva existe no painel
+  de análise, por clipe medido; não é uma faixa de waveform contínua e não tem
+  cache.
 - **Transcrição com timestamps (2.1)** e edição pelo texto (2.2): exige instalar um
   ASR no LM Studio, decisão do usuário. Nada instalado hoje.
 - Validar tamanho e tipo do `POST /upload` no servidor (hoje o filtro é só o
   `accept` da interface) e listar os uploads por projeto.
-- Keyframes, áudio por faixa (ducking, EQ, compressor) e LUTs — Fase 3.
+- Fase 3: cadeia de áudio por faixa (EQ, compressor, limiter, ducking), cor com
+  LUT/scopes e keyframes.
 - Presets de plataforma e reenquadramento 9:16 assistido — Fase 4.
 - Fila com retomada, cache de análise por hash do arquivo, proxies e aceleração por
   hardware — Fase 5.
@@ -125,5 +197,5 @@ escondia.
 ## Limitações conhecidas
 
 Ver seção 8 de `docs/ROADMAP_PROFESSIONAL_EDITOR.md` (keyframes, transições,
-cor, áudio, transcrição, reenquadramento, undo em memória, custo de cada medição,
-tempo do modelo local).
+cor, áudio, transcrição, waveform, reenquadramento, undo em memória, custo de
+cada medição, tempo do modelo local).

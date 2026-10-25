@@ -93,6 +93,101 @@ def test_parse_black_log_devolve_pares():
     assert editor_analysis.parse_black_log(log) == [[1.5, 2.25]]
 
 
+def test_parse_peak_log_agrupa_quadros_no_passo_e_guarda_o_maior():
+    log = (
+        "[Parsed_ametadata_0 @ 0x1] frame:0    pts:0       pts_time:0\n"
+        "[Parsed_ametadata_0 @ 0x1] lavfi.astats.Overall.Peak_level=3.917573\n"
+        "[Parsed_ametadata_0 @ 0x1] frame:1    pts:1024    pts_time:0.0213333\n"
+        "[Parsed_ametadata_0 @ 0x1] lavfi.astats.Overall.Peak_level=-1.468413\n"
+        "[Parsed_ametadata_0 @ 0x1] frame:2    pts:2048    pts_time:0.3\n"
+        "[Parsed_ametadata_0 @ 0x1] lavfi.astats.Overall.Peak_level=-inf\n"
+    )
+    curva = editor_analysis.parse_peak_log(log, 0.1, 0.5)
+    assert len(curva) == 5
+    assert curva[0] == {"time": 0.0, "peak_dbfs": 3.92}
+    assert curva[1] == {"time": 0.1, "peak_dbfs": None}
+    assert curva[3] == {"time": 0.3, "peak_dbfs": None}
+
+
+def test_parse_peak_log_ignora_o_pico_de_um_canal_isolado():
+    """O astats imprime por canal e o geral; a curva é do mix, não de um canal."""
+    log = (
+        "[Parsed_ametadata_0 @ 0x1] frame:0    pts:0       pts_time:0\n"
+        "[Parsed_ametadata_0 @ 0x1] lavfi.astats.1.Peak_level=9.9\n"
+        "[Parsed_ametadata_0 @ 0x1] lavfi.astats.Overall.Peak_level=-2.5\n"
+    )
+    assert editor_analysis.parse_peak_log(log, 0.1, 0.1) == [{"time": 0.0, "peak_dbfs": -2.5}]
+
+
+def test_parse_peak_log_preenche_a_janela_inteira_mesmo_sem_quadro():
+    log = (
+        "[Parsed_ametadata_0 @ 0x1] frame:0    pts:0       pts_time:0\n"
+        "[Parsed_ametadata_0 @ 0x1] lavfi.astats.Overall.Peak_level=-1\n"
+    )
+    curva = editor_analysis.parse_peak_log(log, 0.5, 2.0)
+    assert [p["peak_dbfs"] for p in curva] == [-1.0, None, None, None]
+
+
+def _curva_plana(valor=-20.0, pontos=40):
+    return [{"time": round(i * 0.1, 3), "peak_dbfs": valor} for i in range(pontos)]
+
+
+def test_find_peaks_acha_o_ponto_mais_alto_de_cada_trecho():
+    curva = _curva_plana()
+    curva[10] = {"time": 1.0, "peak_dbfs": -5.0}
+    curva[11] = {"time": 1.1, "peak_dbfs": -3.0}
+    curva[12] = {"time": 1.2, "peak_dbfs": -4.0}
+    achado = editor_analysis.find_peaks(curva, 0.1, rise=6)
+    assert achado["median_dbfs"] == -20.0
+    assert achado["level_dbfs"] == -14.0
+    assert achado["audible_points"] == 40
+    assert achado["peaks"] == [{
+        "time": 1.1,
+        "peak_dbfs": -3.0,
+        "over_median_db": 17.0,
+        "duration": 0.3,
+    }]
+
+
+def test_find_peaks_junta_picos_vizinhos_e_fica_com_o_mais_alto():
+    curva = _curva_plana()
+    curva[10] = {"time": 1.0, "peak_dbfs": -4.0}
+    curva[14] = {"time": 1.4, "peak_dbfs": -2.0}
+    curva[30] = {"time": 3.0, "peak_dbfs": -6.0}
+    achado = editor_analysis.find_peaks(curva, 0.1, rise=6, min_gap=1.0)
+    assert [p["time"] for p in achado["peaks"]] == [1.4, 3.0]
+
+
+def test_find_peaks_sem_trecho_audivel_nao_inventa_mediana():
+    curva = [{"time": i * 0.1, "peak_dbfs": None} for i in range(10)]
+    assert editor_analysis.find_peaks(curva, 0.1) == {
+        "peaks": [],
+        "median_dbfs": None,
+        "level_dbfs": None,
+        "audible_points": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    "rise,min_gap,mensagem",
+    [(-1, 1, "entre 0 e 40"), (41, 1, "entre 0 e 40"),
+     (6, 0.05, "entre 0,1 e 60"), (6, 90, "entre 0,1 e 60")],
+)
+def test_find_peaks_valida_o_aumento_e_a_distancia(rise, min_gap, mensagem):
+    with pytest.raises(ProjectError, match=mensagem):
+        editor_analysis.find_peaks(_curva_plana(), 0.1, rise=rise, min_gap=min_gap)
+
+
+def test_intervalo_da_curva_respeita_o_teto_de_pontos():
+    assert editor_analysis._intervalo_da_curva(10, 0.1) == 0.1
+    assert editor_analysis._intervalo_da_curva(600, 0.1) == 1.0
+    passo = editor_analysis._intervalo_da_curva(3600, 0.1)
+    assert passo == 6.0
+    assert editor_analysis.MAX_CURVA_PONTOS == 600
+    with pytest.raises(ProjectError, match="entre 0,05 e 5"):
+        editor_analysis._intervalo_da_curva(10, 0.01)
+
+
 # -------------------------------------------------------------- parâmetros
 
 
@@ -122,6 +217,8 @@ def test_janela_que_passa_do_arquivo_e_rejeitada():
         ("silence_ranges", {"min_pause": 90}, "entre 0,05 e 60"),
         ("silence_ranges", {"noise": -180}, "entre -90 e 0"),
         ("silence_ranges", {"noise": 3}, "entre -90 e 0"),
+        ("peak_curve", {"interval": 0.01}, "entre 0,05 e 5"),
+        ("peak_curve", {"interval": 30}, "entre 0,05 e 5"),
     ],
 )
 @requires_media
@@ -189,13 +286,39 @@ def test_loudness_de_um_recorte_nao_e_a_medida_do_arquivo_todo():
 
 
 @requires_media
+def test_peak_curve_mede_o_estouro_e_o_silencio_digital_do_material():
+    """
+    A curva é o que o loudness não dá: onde cada pico está.
+
+    O primeiro quadro do arquivo tem +3,9 dBFS (o mesmo true peak do ebur128),
+    os trechos de 2 s e 6 s são silêncio digital (`None`, não `-inf`), e o tom
+    contínuo fica em -0,45 dBFS.
+    """
+    medida = editor_analysis.peak_curve(MEDIA / "video_com_pausas.mp4")
+    assert medida["interval"] == 0.1
+    curva = medida["curve"]
+    assert len(curva) == 100
+    assert curva[0] == {"time": 0.0, "peak_dbfs": 3.92}
+    assert curva[20]["peak_dbfs"] is None
+    assert curva[60]["peak_dbfs"] is None
+    assert curva[45]["peak_dbfs"] == pytest.approx(-0.45, abs=0.05)
+
+
+@requires_media
+def test_peak_curve_de_uma_janela_silenciosa_devolve_none_sem_mentir_numero():
+    medida = editor_analysis.peak_curve(MEDIA / "video_com_pausas.mp4", 2.1, 3.9)
+    assert len(medida["curve"]) == 18
+    assert all(p["peak_dbfs"] is None for p in medida["curve"])
+
+
+@requires_media
 def test_cenas_recusam_material_sem_video():
     with pytest.raises(ProjectError, match="não tem vídeo"):
         editor_analysis.scene_cuts(MEDIA / "fala_com_pausas.m4a")
 
 
 @requires_media
-@pytest.mark.parametrize("funcao", ["silence_ranges", "loudness"])
+@pytest.mark.parametrize("funcao", ["silence_ranges", "loudness", "peak_curve"])
 def test_medições_de_áudio_recusam_material_sem_áudio(funcao):
     with pytest.raises(ProjectError, match="não tem áudio"):
         getattr(editor_analysis, funcao)(MEDIA / "cores.mp4")
@@ -267,6 +390,41 @@ def test_analyze_loudness_mede_mas_nao_produz_candidato(store):
 
 
 @requires_media
+def test_analyze_peaks_mapeia_o_estouro_para_a_timeline_na_velocidade_2x(store):
+    pid, cid = _projeto_com_clipe(
+        store, "video_com_pausas.mp4", start=20.0, out_point=10.0, speed=2.0
+    )
+    analise = editor_analysis.analyze_clip(store.get(pid), cid, "peaks", rise=3)
+    assert analise["kind"] == "peaks"
+    assert analise["group"] == "picos"
+    assert analise["interval"] == 0.1
+    assert len(analise["curve"]) == 100
+    assert analise["median_dbfs"] == pytest.approx(-0.45, abs=0.05)
+    assert analise["level_dbfs"] == pytest.approx(2.55, abs=0.1)
+    assert len(analise["candidates"]) == 1
+    pico = analise["candidates"][0]
+    assert pico["time"] == pytest.approx(20.0)
+    assert pico["source_time"] == pytest.approx(0.0)
+    assert pico["peak_dbfs"] == pytest.approx(3.92, abs=0.05)
+    assert pico["over_median_db"] == pytest.approx(4.37, abs=0.1)
+    # 0,1 s de arquivo viram 0,05 s de timeline a 2x.
+    assert pico["duration"] == pytest.approx(0.05)
+    assert pico["source_duration"] == pytest.approx(0.1)
+    assert pico["label"] == "Pico 3.9 dBFS"
+    assert "1 pico(s)" in analise["summary"]
+
+
+@requires_media
+def test_analyze_peaks_default_nao_marca_tom_continuo(store):
+    """A curva existe, mas 6 dB acima da mediana é um limite que um tom plano não passa."""
+    pid, cid = _projeto_com_clipe(store, "video_com_pausas.mp4")
+    analise = editor_analysis.analyze_clip(store.get(pid), cid, "peaks")
+    assert analise["candidates"] == []
+    assert len(analise["curve"]) == 100
+    assert "nada encontrado com esses parâmetros" in analise["summary"]
+
+
+@requires_media
 def test_analyze_diz_quando_nao_acha_nada_com_aqueles_parametros(store):
     pid, cid = _projeto_com_clipe(store, "video_com_pausas.mp4")
     analise = editor_analysis.analyze_clip(store.get(pid), cid, "silence", min_pause=8.0)
@@ -325,6 +483,18 @@ def test_build_annotations_loudness_nao_grava_nada():
     assert editor_analysis.build_annotations({"kind": "loudness", "candidates": []}) == {
         "group": "",
         "markers": [],
+        "regions": [],
+    }
+
+
+def test_build_annotations_picos_viram_marcadores_laranja():
+    analise = {
+        "kind": "peaks",
+        "candidates": [{"time": 4.0, "label": "Pico -3.0 dBFS"}],
+    }
+    assert editor_analysis.build_annotations(analise) == {
+        "group": "picos",
+        "markers": [{"time": 4.0, "label": "Pico -3.0 dBFS", "color": "#f97316"}],
         "regions": [],
     }
 
@@ -552,6 +722,35 @@ def test_rota_de_analise_valida_entrada(client, projeto_http):
     resposta = client.post(f"/api/editor/projects/{pid}/analyze", json={"clip_id": cid, "kind": "silence", "min_pause": 900})
     assert resposta.status_code == 400
     assert "0,05 e 60" in resposta.json()["detail"]
+    picos = client.post(
+        f"/api/editor/projects/{pid}/analyze", json={"clip_id": cid, "kind": "peaks", "rise": 90}
+    )
+    assert picos.status_code == 400
+    assert "0 e 40" in picos.json()["detail"]
+
+
+@requires_media
+def test_rota_de_picos_devolve_curva_e_grava_marcadores(client, projeto_http):
+    pid = projeto_http
+    cid = _clipe_http(client, pid, "video_com_pausas.mp4")
+    medida = client.post(
+        f"/api/editor/projects/{pid}/analyze", json={"clip_id": cid, "kind": "peaks", "rise": 3}
+    )
+    assert medida.status_code == 200, medida.text
+    dados = medida.json()
+    assert dados["analysis"]["curve"][0] == {"time": 0.0, "peak_dbfs": 3.92}
+    assert dados["analysis"]["candidates"][0]["peak_dbfs"] == pytest.approx(3.92, abs=0.05)
+
+    aplicado = client.post(
+        f"/api/editor/projects/{pid}/analyze",
+        json={"clip_id": cid, "kind": "peaks", "rise": 3, "apply": True},
+    )
+    assert aplicado.status_code == 200, aplicado.text
+    assert aplicado.json()["annotations"] == {"group": "picos", "markers": 1, "regions": 0}
+    marcador = aplicado.json()["project"]["markers"][0]
+    assert marcador["group"] == "picos"
+    assert marcador["time"] == pytest.approx(0.0)
+    assert marcador["color"] == "#F97316"
 
 
 def test_rota_de_analise_em_projeto_inexistente_e_404(client):

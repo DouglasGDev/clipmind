@@ -515,6 +515,8 @@ def analyze_timeline_clip(
     threshold: float = 15,
     noise: float = -30,
     min_pause: float = 0.5,
+    rise: float = 6,
+    min_gap: float = 1,
     apply_candidates: bool = False,
 ) -> str:
     """
@@ -522,13 +524,17 @@ def analyze_timeline_clip(
 
     kind="scenes" acha trocas de cena (scdet, com score de 1 a 100; menor acha
     mais). kind="silence" acha pausas (silencedetect; noise em dB, min_pause em
-    segundos). kind="loudness" mede LUFS integrado, LRA e true peak do clipe —
-    use ANTES de mexer em volume, para diagnosticar em vez de chutar.
+    segundos). kind="loudness" mede LUFS integrado, LRA e true peak do clipe.
+    kind="peaks" mede a curva de pico por instante (a cada 0,1 s) e acha os
+    momentos que passam de `rise` dB acima da mediana do trecho audível,
+    separados por pelo menos `min_gap` segundos. Use peaks para achar onde o
+    áudio está alto antes de normalizar; use loudness para o número agregado.
 
     A análise não corta nada. Sem apply_candidates, você só recebe os tempos. Com
-    apply_candidates=True, cenas viram marcadores e pausas viram regiões na
-    timeline, num único passo de undo, para revisão. Regiões e marcadores criados
-    à mão não são tocados.
+    apply_candidates=True, cenas e picos viram marcadores e pausas viram regiões
+    na timeline, num único passo de undo, para revisão. Regiões e marcadores
+    criados à mão não são tocados. A curva completa de peaks fica na interface;
+    a ferramenta devolve o resumo dela e os picos.
     """
     try:
         projeto = _project(project_id)
@@ -539,6 +545,8 @@ def analyze_timeline_clip(
             threshold=threshold,
             noise=noise,
             min_pause=min_pause,
+            rise=rise,
+            min_gap=min_gap,
         )
     except ProjectError as e:
         return _fail(str(e))
@@ -556,6 +564,13 @@ def analyze_timeline_clip(
     if analise["kind"] == "loudness":
         dados["medicoes"] = analise["measurements"]
         dados["candidatos"] = []
+    elif analise["kind"] == "peaks":
+        dados["curva"] = {
+            "intervalo_s": analise["interval"],
+            "pontos": len(analise["curve"]),
+            "mediana_dbfs": analise["median_dbfs"],
+            "limite_dbfs": analise["level_dbfs"],
+        }
 
     if apply_candidates:
         anotacao = editor_analysis.build_annotations(analise)
@@ -754,7 +769,8 @@ Fluxo obrigatório:
 1. Antes de editar, chame inspect_edit_project uma vez para ver faixas, ids e tempos reais.
 2. Se o pedido depender do conteúdo (pausas, cortes de cena, volume alto ou baixo),
    meça antes de propor qualquer corte: analyze_timeline_clip com kind="silence",
-   "scenes" ou "loudness". Os números vêm da medição; nunca estime de cabeça.
+   "scenes", "loudness" ou "peaks" (curva de pico por instante e onde o nível sobe).
+   Os números vêm da medição; nunca estime de cabeça.
    A medição não altera o projeto. Só grave candidatos (apply_candidates=true)
    depois de dizer o que encontrou, e avise que candidato não é corte.
 3. Carregue uma skill com load_editor_skill quando o pedido envolver método (corte, ritmo,

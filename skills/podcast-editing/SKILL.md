@@ -12,7 +12,7 @@ tools: create_edit_project, inspect_edit_project, add_timeline_clip, add_timelin
 - Não espere multicam automático nem sync por waveform: não existem.
 
 ## 2. Objetivo
-Entregar diálogo claro com vozes equilibradas, pausas e erros removidos manualmente, transições por fade e capítulos marcados. O medidor é `analyze_timeline_clip` por clipe (loudness, pausas) mais o QC do render; texto falado e sincronia vêm do usuário e de tempos medidos.
+Entregar diálogo claro com vozes equilibradas, pausas e erros removidos manualmente, transições por fade e capítulos marcados. O medidor é `analyze_timeline_clip` por clipe (loudness, pausas, picos) mais o QC do render; texto falado e sincronia vêm do usuário e de tempos medidos.
 
 ## 3. Entradas necessárias
 - Arquivos por participante com caminho absoluto; a duração real vem do probe das ferramentas.
@@ -27,7 +27,7 @@ Entregar diálogo claro com vozes equilibradas, pausas e erros removidos manualm
 1. Projeto 1920x1080@30; confirme as faixas com `inspect_edit_project`.
 2. Camadas de áudio reais: `a1` é a única faixa de áudio (não há ferramenta para criar `a2`), mais o áudio embutido em `v1`/`v2`. Ex.: apresentador no vídeo de `v1`, convidado em `a1`, trilha só embutida no vídeo ou pre-mixada fora.
 3. Alinhe gravações separadas manualmente: leia durações e tempos devolvidos por `add_timeline_clip`/`inspect_edit_project`, marque o ponto comum (clap) e posicione com `move_timeline_clip(start=...)`.
-4. Meça as pausas antes de cortar: `analyze_timeline_clip(project_id, clip_id, kind="silence", noise=-30, min_pause=0.5)` devolve `start`/`end` em tempo de timeline e `source_start`/`source_end` no arquivo. Com `apply_candidates=true` elas viram regiões do grupo `pausas`, num único undo, para o humano revisar na timeline e no painel "Análise".
+4. Meça as pausas antes de cortar: `analyze_timeline_clip(project_id, clip_id, kind="silence", noise=-30, min_pause=0.5)` devolve `start`/`end` em tempo de timeline e `source_start`/`source_end` no arquivo. Com `apply_candidates=true` elas viram regiões do grupo `pausas`, num único undo, para o humano revisar na timeline e no painel "Análise". Picos de nível (risada, baque na mesa, clipping) saem de `kind="peaks", rise=6, min_gap=1`: a curva mostra onde o nível sobe e `apply_candidates=true` grava marcadores do grupo `picos`.
 5. Corte erros e pausas aprovadas com `split_timeline_clip` + `delete_timeline_clip(confirm=true, ripple=true)`; ripple move só a faixa editada; ajuste as outras. Para descartar a sugestão: `clear_timeline_annotations(project_id, group="pausas")` — marcadores feitos à mão ficam.
 6. Equilibre vozes medindo: `analyze_timeline_clip(project_id, clip_id, kind="loudness")` por clipe devolve `integrated_lufs`, `lra_lu`, `true_peak_dbfs`; compare com a meta e ajuste `set_timeline_clip(volume=...)` (0,8–1,4, diferença ≤ 3 dB, +6 dB ≈ ×2), depois meça de novo.
 7. Fades: 1–2 s no início, 2–3 s no fim, 0,3–0,6 s entre blocos; `fade_in`/`fade_out` atingem áudio e vídeo.
@@ -58,7 +58,7 @@ Entregar diálogo claro com vozes equilibradas, pausas e erros removidos manualm
 ## 9. Limitações do sistema atual
 Existe medição: `analyze_timeline_clip` roda FFmpeg num clipe e devolve pausas (`kind="silence"`, com `noise` em dB e `min_pause` em s), trocas de cena com score (`kind="scenes"`, `threshold` 1–100, tempo na timeline e no arquivo) e três números de áudio (`kind="loudness"`: LUFS integrado, LRA em LU, true peak em dBFS). Com `apply_candidates=true` pausas viram regiões (grupo `pausas`) e cenas viram marcadores (grupo `cenas`), num único undo; `clear_timeline_annotations` remove só esse grupo. O QC do render reporta `loudness_lufs`, `lra_lu`, `true_peak_dbfs` e `black_ranges`.
 
-Não existe: transcrição/Whisper, timestamps por palavra, identificação de falante, corte automático de pausa (a análise propõe, `split`+`delete` cortam), nivelação/normalização automática, ducking, EQ/compressor/denoiser, waveform, curva de pico por instante, beat, keyframes, LUTs, rastreamento e sync automático. Só há a faixa `a1`; não há ferramenta para criar faixas de áudio extras e o limitador é fixo em 0,95 (≈ -0,45 dBFS). Transição é só fade e velocidade é constante. Faça o equivalente manual (medir, split + delete com ripple, volume por clipe, offsets medidos) e informe isso na resposta, sem fingir automação.
+Não existe: transcrição/Whisper, timestamps por palavra, identificação de falante, corte automático de pausa (a análise propõe, `split`+`delete` cortam), nivelação/normalização automática, ducking, EQ/compressor/denoiser, waveform desenhada na timeline, beat, keyframes, LUTs, rastreamento e sync automático. A curva de pico por instante existe na análise (`kind="peaks"`) e no painel do clipe, não como waveform do projeto. Só há a faixa `a1`; não há ferramenta para criar faixas de áudio extras e o limitador é fixo em 0,95 (≈ -0,45 dBFS). Transição é só fade e velocidade é constante. Faça o equivalente manual (medir, split + delete com ripple, volume por clipe, offsets medidos) e informe isso na resposta, sem fingir automação.
 
 ## 10. Exemplo de uso
 Usuário: "Podcast de 40 min; `host.mp4` com voz embutida e `convidado.mp4`; corte erros em 00:07:12 e 00:23:40 e tire as pausas longas."

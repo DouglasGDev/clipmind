@@ -1,15 +1,18 @@
 """
 Medição do conteúdo dos clipes com FFmpeg.
 
-Cenas, pausas e loudness saem dos filtros reais (`scdet`, `silencedetect`,
-`ebur128`) rodados na janela exata que o clipe ocupa no arquivo. Nada aqui toca
-no projeto: quem transforma medida em anotação é `editor_project.annotate`, e a
-anotação é um candidato que o editor (humano ou IA) revisa antes de cortar.
+Cenas, pausas, loudness e a curva de pico por instante saem dos filtros reais
+(`scdet`, `silencedetect`, `ebur128`, `astats`) rodados na janela exata que o
+clipe ocupa no arquivo. Nada aqui toca no projeto: quem transforma medida em
+anotação é `editor_project.annotate`, e a anotação é um candidato que o editor
+(humano ou IA) revisa antes de cortar.
 """
 
 from __future__ import annotations
 
+import math
 import re
+import statistics
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -29,15 +32,25 @@ def _round(value: float) -> float:
     """Mesma granularidade do motor: 3 decimais, para os tempos baterem com o projeto."""
     return round(float(value), 3)
 
-KINDS = ("scenes", "silence", "loudness")
+KINDS = ("scenes", "silence", "loudness", "peaks")
 
 # Nome do grupo de anotação que cada análise grava na timeline. `loudness` mede,
 # não marca nada, então o grupo é vazio e a interface esconde "Limpar".
-GROUPS = {"scenes": "cenas", "silence": "pausas", "loudness": ""}
+GROUPS = {"scenes": "cenas", "silence": "pausas", "loudness": "", "peaks": "picos"}
 
 # Mais que isso na timeline vira ruído visual e o FFmpeg já está lendo o arquivo
 # inteiro; a mensagem diz para estreitar a janela em vez de silenciar o resto.
 MAX_CANDIDATOS = 200
+
+# Teto da curva devolvida à interface: 10 minutos a 0,1 s dariam 6000 pontos no
+# JSON; acima disso o passo cresce e a leitura continua fiel no que importa (o
+# pico de cada trecho), só menos fina no tempo.
+MAX_CURVA_PONTOS = 600
+
+# Abaixo disto o quadro é silêncio para efeito de mediana. Sem esse piso, um
+# arquivo com muito silêncio puxaria a mediana para -inf e qualquer som viraria
+# "pico". O valor é um piso de audibilidade declarado, não uma medida.
+AUDIBLE_DBFS = -60.0
 
 _TIMEOUT = 900
 
@@ -126,6 +139,59 @@ def parse_ebur128(texto: str) -> dict:
     if peaks:
         medidas["true_peak_dbfs"] = float(peaks[-1])
     return medidas
+
+
+_PTS_QUADRO = re.compile(r"pts_time:(\S+)")
+_NIVEL_QUADRO = re.compile(r"lavfi\.astats\.Overall\.Peak_level=(\S+)")
+
+
+def parse_peak_log(texto: str, interval: float = 0.1, total: Optional[float] = None) -> list[dict]:
+    """
+    Curva de pico por instante a partir do `astats` com `ametadata=print`.
+
+    O astats é reiniciado a cada quadro de áudio (1024 amostras, ~21 ms) e imprime
+    um bloco `frame:… pts_time:…` seguido de `lavfi.astats.Overall.Peak_level`.
+    Cada quadro vale o maior pico absoluto entre os canais, em dBFS; `-inf` é
+    silêncio digital e vira `None`, para ninguém ler `-inf` como número.
+
+    O passo agrupa vários quadros e fica com o maior pico do intervalo — a curva
+    mostra onde o nível está alto, não a média do trecho.
+    """
+    passo = float(interval)
+    blocos = re.split(r"frame:\d+", texto)[1:]
+    bins: dict[int, Optional[float]] = {}
+    ultimo = -1
+    for bloco in blocos:
+        tempo = _PTS_QUADRO.search(bloco)
+        nivel = _NIVEL_QUADRO.search(bloco)
+        if not tempo or not nivel:
+            continue
+        try:
+            instante = float(tempo.group(1))
+            valor: Optional[float] = float(nivel.group(1))
+        except ValueError:
+            continue
+        if not math.isfinite(valor):
+            valor = None
+        if instante < 0 or (total is not None and instante >= float(total) + 1e-6):
+            continue
+        indice = int(instante / passo + 1e-6)
+        atual = bins.get(indice)
+        if valor is not None and (atual is None or valor > atual):
+            bins[indice] = valor
+        else:
+            bins.setdefault(indice, None)
+        ultimo = max(ultimo, indice)
+
+    total_bins = int(math.ceil(float(total) / passo - 1e-9)) if total is not None else ultimo + 1
+    total_bins = max(total_bins, ultimo + 1)
+    return [
+        {
+            "time": round(indice * passo, 3),
+            "peak_dbfs": None if bins.get(indice) is None else round(bins[indice], 2),
+        }
+        for indice in range(total_bins)
+    ]
 
 
 def parse_black_log(texto: str) -> list[list[float]]:
@@ -245,6 +311,121 @@ def loudness(
     return medidas
 
 
+def _intervalo_da_curva(duracao: float, interval: float) -> float:
+    """Passo efetivo da curva: respeita o pedido e o teto de pontos do JSON."""
+    passo = float(interval)
+    if not 0.05 <= passo <= 5:
+        raise ProjectError("O intervalo da curva de pico deve estar entre 0,05 e 5 segundos")
+    if duracao > 0 and duracao / passo > MAX_CURVA_PONTOS:
+        passo = math.ceil(duracao / MAX_CURVA_PONTOS * 100) / 100
+    return passo
+
+
+def peak_curve(
+    source: str | Path,
+    start: float = 0.0,
+    end: Optional[float] = None,
+    interval: float = 0.1,
+) -> dict:
+    """
+    Curva de pico por instante do recorte, medida quadro a quadro pelo `astats`.
+
+    Devolve `{"interval": passo, "curve": [{"time", "peak_dbfs"}, …]}` com tempo
+    relativo ao início da janela. Silêncio digital vem como `peak_dbfs: None`;
+    acima de 0 dBFS o valor é positivo e real (o material de teste tem +3,9).
+
+    A medição lê do começo do arquivo e recorta com `atrim`, pelo mesmo motivo do
+    loudness: seek de entrada descarta o priming do AAC e mentiria no primeiro
+    quadro.
+    """
+    arquivo, inicio, fim, info = _janela(source, start, end)
+    if not info["has_audio"]:
+        raise ProjectError(f"{arquivo.name} não tem áudio para medir picos")
+    passo = _intervalo_da_curva(fim - inicio, interval)
+    texto = run_ffmpeg_log([
+        "-i", str(arquivo), "-vn", "-sn",
+        "-af", (
+            f"{_leitura_em_janela(inicio, fim)},"
+            "astats=metadata=1:reset=1:measure_perchannel=none:"
+            "measure_overall=Peak_level,ametadata=mode=print"
+        ),
+        "-f", "null", "-",
+    ])
+    curva = parse_peak_log(texto, passo, fim - inicio)
+    if not curva:
+        raise ProjectError(f"O astats não devolveu medida para {arquivo.name}")
+    return {"interval": passo, "curve": curva}
+
+
+def find_peaks(
+    curve: list[dict],
+    interval: float,
+    rise: float = 6.0,
+    min_gap: float = 1.0,
+    floor: float = AUDIBLE_DBFS,
+) -> dict:
+    """
+    Momentos da curva que passam de `rise` dB acima da mediana do trecho audível.
+
+    A mediana é calculada só nos pontos acima do piso: silêncio não é nível
+    típico. Trechos contíguos acima do limite viram um candidato só, no ponto
+    mais alto; `min_gap` junta picos vizinhos pelo mais alto. Nada aqui corta
+    nem altera o projeto — é a lista de onde o áudio sobe mais.
+    """
+    aumento = float(rise)
+    if not 0 <= aumento <= 40:
+        raise ProjectError("O aumento sobre a mediana deve estar entre 0 e 40 dB")
+    distancia = float(min_gap)
+    if not 0.1 <= distancia <= 60:
+        raise ProjectError("A distância mínima entre picos deve estar entre 0,1 e 60 segundos")
+    passo = float(interval)
+
+    audiveis = [
+        item["peak_dbfs"] for item in curve
+        if item.get("peak_dbfs") is not None and item["peak_dbfs"] > floor
+    ]
+    if not audiveis:
+        return {"peaks": [], "median_dbfs": None, "level_dbfs": None, "audible_points": 0}
+
+    mediana = round(statistics.median(audiveis), 2)
+    limite = round(mediana + aumento, 2)
+
+    trechos: list[list[int]] = []
+    atual: list[int] = []
+    for indice, item in enumerate(curve):
+        nivel = item.get("peak_dbfs")
+        if nivel is not None and nivel > floor and nivel >= limite:
+            atual.append(indice)
+        elif atual:
+            trechos.append(atual)
+            atual = []
+    if atual:
+        trechos.append(atual)
+
+    picos: list[dict] = []
+    for indices in trechos:
+        indice = max(indices, key=lambda posicao: curve[posicao]["peak_dbfs"])
+        nivel = float(curve[indice]["peak_dbfs"])
+        picos.append({
+            "time": _round(curve[indice]["time"]),
+            "peak_dbfs": round(nivel, 2),
+            "over_median_db": round(nivel - mediana, 2),
+            "duration": round(len(indices) * passo, 2),
+        })
+
+    escolhidos: list[dict] = []
+    for pico in sorted(picos, key=lambda item: item["peak_dbfs"], reverse=True):
+        if all(abs(pico["time"] - outro["time"]) >= distancia for outro in escolhidos):
+            escolhidos.append(pico)
+    escolhidos.sort(key=lambda item: item["time"])
+    return {
+        "peaks": escolhidos,
+        "median_dbfs": mediana,
+        "level_dbfs": limite,
+        "audible_points": len(audiveis),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Medição por clipe do projeto
 # ---------------------------------------------------------------------------
@@ -262,15 +443,16 @@ def analyze_clip(project: dict, clip_id: str, kind: str = "scenes", **opts: Any)
     """
     Analisa um clipe de mídia e devolve candidatos em tempo de timeline.
 
-    `kind` aceita `scenes` (cortes de cena), `silence` (pausas) e `loudness`
-    (medida de áudio). A função não escreve nada no projeto — o retorno traz os
+    `kind` aceita `scenes` (cortes de cena), `silence` (pausas), `loudness`
+    (medida de áudio) e `peaks` (curva de pico por instante e momentos acima do
+    nível típico). A função não escreve nada no projeto — o retorno traz os
     candidatos prontos para `annotate`, e `loudness` não tem candidato nenhum: é
     só número, porque diagnosticar antes de processar é a regra.
     """
     tipo = (kind or "scenes").strip().lower()
     if tipo not in KINDS:
         raise ProjectError(
-            f"Análise desconhecida: {kind}. Use 'scenes', 'silence' ou 'loudness'."
+            f"Análise desconhecida: {kind}. Use 'scenes', 'silence', 'loudness' ou 'peaks'."
         )
     track, clip = get_clip(project, clip_id)
     if clip.get("type") not in {"video", "audio"}:
@@ -311,6 +493,7 @@ def analyze_clip(project: dict, clip_id: str, kind: str = "scenes", **opts: Any)
         return resultado
 
     truncado = False
+    sem_audivel = False
     if tipo == "scenes":
         cortes = scene_cuts(origem, ini, fim, threshold=float(opts.get("threshold", 15)))
         if len(cortes) > MAX_CANDIDATOS:
@@ -327,6 +510,48 @@ def analyze_clip(project: dict, clip_id: str, kind: str = "scenes", **opts: Any)
             })
         resultado["threshold"] = float(opts.get("threshold", 15))
         achado = f"{len(candidatos)} troca(s) de cena"
+    elif tipo == "peaks":
+        curva = peak_curve(origem, ini, fim, interval=float(opts.get("interval", 0.1)))
+        deteccao = find_peaks(
+            curva["curve"],
+            curva["interval"],
+            rise=float(opts.get("rise", 6.0)),
+            min_gap=float(opts.get("min_gap", 1.0)),
+        )
+        velocidade = max(0.01, float(clip.get("speed", 1) or 1))
+        resultado["interval"] = curva["interval"]
+        resultado["curve"] = curva["curve"]
+        resultado["median_dbfs"] = deteccao["median_dbfs"]
+        resultado["level_dbfs"] = deteccao["level_dbfs"]
+        resultado["rise"] = float(opts.get("rise", 6.0))
+        resultado["min_gap"] = float(opts.get("min_gap", 1.0))
+        if len(deteccao["peaks"]) > MAX_CANDIDATOS:
+            truncado = True
+        candidatos = []
+        for pico in deteccao["peaks"][:MAX_CANDIDATOS]:
+            no_arquivo, na_timeline = _projecao(clip, pico["time"])
+            candidatos.append({
+                "time": na_timeline,
+                "source_time": no_arquivo,
+                "peak_dbfs": pico["peak_dbfs"],
+                "over_median_db": pico["over_median_db"],
+                # Trecho alto em segundos, na timeline e no arquivo.
+                "duration": _round(pico["duration"] / velocidade),
+                "source_duration": pico["duration"],
+                "label": f"Pico {pico['peak_dbfs']:.1f} dBFS",
+            })
+        if deteccao["median_dbfs"] is None:
+            sem_audivel = True
+            achado = (
+                f"nenhum trecho acima de {AUDIBLE_DBFS:g} dBFS "
+                "(silêncio ou nível muito baixo)"
+            )
+        else:
+            achado = (
+                f"{len(candidatos)} pico(s) acima de {deteccao['level_dbfs']:.1f} dBFS "
+                f"(mediana {deteccao['median_dbfs']:.1f} dBFS, "
+                f"curva de {len(curva['curve'])} pontos a cada {curva['interval']:g}s)"
+            )
     else:
         pausas = silence_ranges(
             origem,
@@ -365,7 +590,7 @@ def analyze_clip(project: dict, clip_id: str, kind: str = "scenes", **opts: Any)
         resultado["summary"] += (
             f" (limitado a {MAX_CANDIDATOS}; estreite a janela ou aumente o limiar)"
         )
-    if not candidatos:
+    if not candidatos and not sem_audivel:
         resultado["summary"] += "; nada encontrado com esses parâmetros"
     return resultado
 
@@ -374,20 +599,21 @@ def build_annotations(analysis: dict) -> dict:
     """
     Converte a análise nos parâmetros da operação `annotate`.
 
-    Cena é marcador (um ponto); pausa é região (um intervalo) — a forma como a
-    timeline já mostra cada coisa. O `group` permite limpar só uma análise sem
-    apagar os marcadores que o editor fez à mão.
+    Cena e pico são marcadores (um ponto); pausa é região (um intervalo) — a
+    forma como a timeline já mostra cada coisa. O `group` permite limpar só uma
+    análise sem apagar os marcadores que o editor fez à mão.
 
     Sempre devolve `markers` e `regions`, mesmo vazios: o resultado vai direto
     como parâmetro de `annotate`, e uma chave ausente estouraria a rota inteira.
     """
     kind = analysis["kind"]
     candidatos = analysis["candidates"]
-    if kind == "scenes":
+    if kind in ("scenes", "peaks"):
+        cor = "#fbbf24" if kind == "scenes" else "#f97316"
         return {
-            "group": GROUPS["scenes"],
+            "group": GROUPS[kind],
             "markers": [
-                {"time": item["time"], "label": item["label"], "color": "#fbbf24"}
+                {"time": item["time"], "label": item["label"], "color": cor}
                 for item in candidatos
             ],
             "regions": [],

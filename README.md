@@ -51,7 +51,7 @@ A mesma camada de IA atende três superfícies:
 - Títulos com `drawtext` e legendas queimadas com alinhamento determinístico (`.srt`/`.vtt`/`.ass`)
 - Render em thread separada com progresso, cancelamento, log, QC por ffprobe e saída em arquivo novo
 - Prévia leve (360p) separada da exportação final
-- Análise de conteúdo por FFmpeg no clipe: trocas de cena, pausas de silêncio e loudness (LUFS/LRA/true peak), gravados como candidatos revisáveis na timeline
+- Análise de conteúdo por FFmpeg no clipe: trocas de cena, pausas de silêncio, loudness (LUFS/LRA/true peak) e curva de pico por instante com os momentos acima do nível típico, gravados como candidatos revisáveis na timeline
 - 21 skills de método carregadas sob demanda; a IA só chama as 21 ferramentas do motor, nunca um comando de shell
 
 **Edição**
@@ -186,7 +186,7 @@ Fluxo típico:
 1. **Novo projeto** — nome, largura, altura e fps. O projeto vira JSON em `./projects/<id>/`, versionado a cada mudança.
 2. **Mídia** — arraste arquivos ou use **Enviar arquivo**. Duplo clique em um item coloca o clipe na faixa ativa.
 3. **Timeline** — arraste um clipe para mover, puxe a borda para aparar, `S` divide no playhead. Faixas: `v1`/`v2` (vídeo), `t1` (títulos), `s1` (legendas), `a1` (áudio). Snap, marcadores, zoom e regiões de trabalho estão na barra da timeline: `I` marca a entrada, `O` marca a saída e `+` cria a região entre elas. O snap também encaixa nas bordas das regiões.
-4. **Clipe** (inspector) — volume, fades, velocidade (0,1x a 8x), escala/posição/opacidade e cor por clipe. Em clipes de mídia, o bloco **Análise** mede o conteúdo com FFmpeg (`Cortes de cena`, `Pausas de silêncio`, `Loudness`): **Medir** mostra os candidatos sem tocar na timeline, **Aplicar como candidatos** grava marcadores/regiões num único passo de undo e **Limpar** remove só o grupo daquela análise.
+4. **Clipe** (inspector) — volume, fades, velocidade (0,1x a 8x), escala/posição/opacidade e cor por clipe. Em clipes de mídia, o bloco **Análise** mede o conteúdo com FFmpeg (`Cortes de cena`, `Pausas de silêncio`, `Loudness`, `Picos de áudio`): **Medir** mostra os candidatos sem tocar na timeline, **Aplicar como candidatos** grava marcadores/regiões num único passo de undo e **Limpar** remove só o grupo daquela análise. Em `Picos de áudio`, a curva de pico por 0,1 s aparece desenhada no painel e os candidatos são os trechos que passam de `rise` dB acima da mediana (`Distância mín.` separa picos vizinhos).
 5. **Histórico** — `Ctrl+Z` / `Ctrl+Shift+Z` desfaz e refaz qualquer operação; a aba **Projeto → Versões** guarda os 30 últimos snapshots e restaura qualquer um.
 6. **Prévia** — render 360p em thread separada, com progresso, log e cancelamento. A prévia não apaga a exportação: são arquivos novos.
 7. **Exportar** — render na resolução do projeto, com presets de formato/qualidade.
@@ -209,7 +209,7 @@ Atalhos: `Espaço` play/pause · `S` dividir · `M` marcador · `I` entrada da r
 | `GET` | `/api/editor/projects/{id}/versions` | Versões gravadas em disco |
 | `POST` | `/api/editor/projects/{id}/versions/{versão}/restore` | Restaura uma versão |
 | `GET` | `/api/editor/projects/{id}/validate` | Issues do projeto, com severidade |
-| `POST` | `/api/editor/projects/{id}/analyze` | Mede um clipe com FFmpeg (`clip_id`, `kind` = `scenes`/`silence`/`loudness`, `threshold`, `noise`, `min_pause`, `apply`) |
+| `POST` | `/api/editor/projects/{id}/analyze` | Mede um clipe com FFmpeg (`clip_id`, `kind` = `scenes`/`silence`/`loudness`/`peaks`, `threshold`, `noise`, `min_pause`, `rise`, `min_gap`, `interval`, `apply`) |
 | `POST` | `/api/editor/projects/{id}/render` | Enfileira prévia ou export (`preview`, `format`, `crf`, ...) |
 | `GET` / `DELETE` | `/api/editor/jobs/{job_id}` | Status de uma renderização / cancela |
 | `POST` | `/api/editor/jobs/{job_id}/validate` | QC do arquivo gerado |
@@ -401,7 +401,7 @@ clipmind/
 ├── editor_agent.py           # Interface de terminal (reaproveita agent.py)
 ├── editor_project.py         # Motor do projeto: faixas, clipes, operações, undo/redo, versões
 ├── editor_render.py          # Render multipista em thread + progresso, cancelamento e QC
-├── editor_analysis.py        # Medição de conteúdo por FFmpeg: cenas, pausas, loudness e mapeamento
+├── editor_analysis.py        # Medição de conteúdo por FFmpeg: cenas, pausas, loudness, curva de picos
 ├── editor_api.py             # Rotas /api/editor/* e /editor (REST + eventos por WebSocket)
 ├── editor_skills.py          # Catálogo das 21 skills (SKILL.md em ./skills)
 ├── timeline_agent.py         # Agente da timeline: 21 ferramentas, histórico por projeto
@@ -413,7 +413,7 @@ clipmind/
 ├── static/editor.js          # Timeline, inspector, monitores, render e QC
 ├── skills/                   # 21 pastas com SKILL.md
 ├── docs/                     # ROADMAP_PROFESSIONAL_EDITOR.md e PROGRESSO.md
-├── tests/                    # 709 testes (motor, API, render, análise, skills, agente)
+├── tests/                    # 731 testes (motor, API, render, análise, skills, agente)
 ├── test_videos/              # Mídia de exemplo usada nos testes
 ├── requirements.txt          # Dependências Python
 ├── README.md
@@ -453,14 +453,14 @@ O painel manual usa o mesmo registro de funções do agente: `/tool/{name}` acei
 python -m pytest tests -q
 ```
 
-São **709 testes** em ~20 s e nenhum deles precisa do LM Studio: o agente é exercitado com um cliente LLM falso, que devolve `toolCallRequest` de verdade para confirmar o encadeamento, os eventos e as mensagens de erro.
+São **731 testes** em ~22 s e nenhum deles precisa do LM Studio: o agente é exercitado com um cliente LLM falso, que devolve `toolCallRequest` de verdade para confirmar o encadeamento, os eventos e as mensagens de erro.
 
 | Arquivo | O que cobre |
 |---------|-------------|
 | `tests/test_project_engine.py` | Operações da timeline, colisões, ripple/roll/slip/slide, regiões, undo/redo, versões, validação |
 | `tests/test_api.py` | Todas as rotas `/api/*` e `/tool/*`, códigos 400/404/409, corpo malformado, limites |
 | `tests/test_render.py` | Linha de comando do FFmpeg, prévia vs. export, cancelamento, QC, arquivos novos |
-| `tests/test_analysis.py` | Leitores de log do FFmpeg, medição real em cena/pausa/loudness, mapeamento para a timeline e a rota `/analyze` |
+| `tests/test_analysis.py` | Leitores de log do FFmpeg, medição real em cena/pausa/loudness/curva de pico, mapeamento para a timeline e a rota `/analyze` |
 | `tests/test_analysis_agent.py` | `analyze_timeline_clip` e `clear_timeline_annotations` como o agente as chama: assinatura, prompt e undo |
 | `tests/test_skills.py` | As 21 skills: seções obrigatórias, front matter e ferramentas que realmente existem |
 | `tests/test_timeline_agent.py` | As 21 ferramentas da IA, rejeição de parâmetros, prompt de sistema e integração com o LM Studio |
@@ -468,6 +468,8 @@ São **709 testes** em ~20 s e nenhum deles precisa do LM Studio: o agente é ex
 As renderizações de verdade usam `test_videos/` e são conferidas com `ffprobe`, não só com comparação de texto. Sem a mídia no lugar, esses testes são pulados com aviso — o resto roda igual.
 
 As medições de áudio são testadas contra números reais do material de teste, e foi assim que dois defeitos apareceram antes de qualquer commit: o true peak saía 0,1 dBFS em vez de 3,9 dBFS porque o seek de entrada (`-ss`) descarta os ~21 ms de priming do decodificador AAC antes do filtro — por isso a janela é recortada com `atrim`/`asetpts` dentro de `-af` — e as faixas de `blackdetect` saíam com duração zero por um grupo capturado a mais no regex do leitor de log.
+
+A curva de pico segue a mesma regra de número medido: no clipe de teste ela devolve **+3,92 dBFS** no primeiro quadro, `null` nos 2 s e 6 s de silêncio digital (nada de `-inf` virando número) e **−0,45 dBFS** no tom contínuo.
 
 ---
 

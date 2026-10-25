@@ -1173,6 +1173,35 @@ body.trimming * {
     flex: none;
 }
 
+.analysis-field[data-kind="peaks"] {
+    flex-basis: 96px;
+}
+
+.analysis-curve {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px 6px;
+}
+
+.analysis-curve svg {
+    display: block;
+    width: 100%;
+    height: 56px;
+}
+
+.analysis-curve rect {
+    fill: var(--accent-2);
+    opacity: 0.72;
+}
+
+.analysis-curve line {
+    stroke: #f97316;
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.9;
+}
+
 .analysis-actions {
     display: flex;
     gap: 6px;
