@@ -289,6 +289,20 @@ python server.py
 |----------|--------|-----|
 | `CLIPMIND_MODEL` | auto | nome/chave do modelo no LM Studio |
 | `CLIPMIND_LMS_HOST` | auto | `host:porta` da API local do LM Studio |
+| `CLIPMIND_CONTEXT` | `16384` | contexto em tokens ao carregar o modelo |
+
+As 23 ferramentas ocupam cerca de 5.700 tokens de contexto. Com 8k sobram
+poucos tokens para o histórico: numa cadeia longa os primeiros resultados saem
+da janela e o modelo pode inventar números no resumo final. Por isso o padrão é
+16k. O LM Studio não recarrega um modelo já carregado só porque a configuração
+mudou: se ele já estiver em memória com contexto menor, descarregue-o no LM
+Studio (ou reinicie o servidor) para o ClipMind carregá-lo no tamanho novo.
+
+Se a máquina não tiver memória para 16k, reduza:
+
+```powershell
+$env:CLIPMIND_CONTEXT = "8192"
+```
 
 ### Pasta de saída
 

@@ -9,6 +9,7 @@ Python correspondente, o resultado volta para o modelo, e assim até a resposta.
 Configuração por variáveis de ambiente:
     CLIPMIND_MODEL     nome/chave do modelo no LM Studio
     CLIPMIND_LMS_HOST  host:porta da API local (padrão: descoberta automática)
+    CLIPMIND_CONTEXT   contexto em tokens ao carregar o modelo (padrão: 16384)
 
 O SDK 1.5.0 não expõe parâmetro de token no AsyncClient, então o servidor do LM
 Studio precisa estar sem exigência de API token (veja AUTH_HINT abaixo).
@@ -50,6 +51,13 @@ from youtube_editor_tools import (
 
 MODEL_NAME = os.getenv("CLIPMIND_MODEL", "")
 LMS_HOST = os.getenv("CLIPMIND_LMS_HOST", "")
+
+# As 23 definições de ferramentas ocupam ~5.700 tokens; com 8k de contexto sobra
+# pouco histórico e resultados antigos saem da janela no meio de uma cadeia.
+try:
+    CONTEXT_LENGTH = int(os.getenv("CLIPMIND_CONTEXT", "16384"))
+except ValueError:
+    CONTEXT_LENGTH = 16384
 
 TOOLS = [
     inspect_video,
@@ -273,6 +281,7 @@ async def _resolve_llm(
     carregado, usa o único LLM baixado. `llm.model()` carrega sob demanda.
     """
     progress = _load_progress(on_event, pendentes)
+    config_carga = {"contextLength": CONTEXT_LENGTH}
 
     if not MODEL_NAME:
         loaded = await client.llm.list_loaded()
@@ -294,11 +303,15 @@ async def _resolve_llm(
                 + nomes
             )
         return await client.llm.model(
-            llms_baixados[0].model_key, on_load_progress=progress
+            llms_baixados[0].model_key,
+            config=config_carga,
+            on_load_progress=progress,
         )
 
     try:
-        return await client.llm.model(MODEL_NAME, on_load_progress=progress)
+        return await client.llm.model(
+            MODEL_NAME, config=config_carga, on_load_progress=progress
+        )
     except lms.LMStudioModelNotFoundError:
         downloaded = await client.llm.list_downloaded()
         nomes = sorted({m.model_key for m in downloaded})
